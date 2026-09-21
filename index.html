@@ -57,10 +57,10 @@
   <section class="panel">
     <h2>🔊 Biblioteca de áudios</h2>
     <input id="audioFiles" type="file" accept=".mp3,audio/mpeg,audio/mp3,audio/*" multiple>
-    <div id="audioInfo" class="audio-info">Você pode escolher vários MP3s. No modo sincronizado, eles serão enviados para a sala e aparecerão também no outro celular.</div>
+    <div id="audioInfo" class="audio-info">Você pode escolher vários MP3s. No modo local, eles ficam salvos neste aparelho mesmo após F5. No modo sincronizado, ficam salvos na sala e aparecem também nos outros aparelhos.</div>
     <ul id="audioListView" class="audio-list"></ul>
     <div class="audio-actions"><button id="testAudioBtn">▶ Testar aleatório</button><button id="clearAudioBtn" class="danger">Limpar áudios</button></div>
-    <p class="small">Para esta versão, use clipes curtos. Cada arquivo pode ter até 2,5 MB e o total sincronizado da sala até aproximadamente 12 MB. Para músicas longas, depois vale migrar os arquivos para Firebase Storage.</p>
+    <p class="small">Os MP3s locais são guardados no navegador deste aparelho (IndexedDB). Os MP3s sincronizados ficam na sala do Firebase. Use clipes curtos: cada arquivo sincronizado pode ter até 2,5 MB e o total da sala até aproximadamente 12 MB.</p>
   </section>
 
   <section class="camera"><video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas><div class="banner">MOSTRE A BOLA EM QUALQUER PARTE DA CÂMERA</div></section>
@@ -96,10 +96,17 @@
   let localScores={A:0,B:0},cloudConnected=false,pollTimer=null,settingsSaveTimer=null;
   let audioList=[],audioCtx=null,currentAudio=null,lastAudioIndex=-1,lastAudioVersion=null;
   const MAX_FILE=2.5*1024*1024,MAX_TOTAL=12*1024*1024;
+  const LOCAL_AUDIO_DB='ballers_score_audio_db', LOCAL_AUDIO_STORE='audios';
 
+  try{
+    const savedScores=JSON.parse(localStorage.getItem('ballers_localScores')||'null');
+    if(savedScores) localScores={A:Math.max(0,Number(savedScores.A)||0),B:Math.max(0,Number(savedScores.B)||0)};
+  }catch(e){}
   deviceTeam.value=localStorage.getItem('ballers_deviceTeam')||'A';
+  mode.value=localStorage.getItem('ballers_mode')||'local';
   dbUrl.value=localStorage.getItem('ballers_dbUrl')||'';
   room.value=localStorage.getItem('ballers_room')||'quadra1';
+  cloudPanel.style.display=mode.value==='cloud'?'block':'none';
 
   function selectedTeam(){return deviceTeam.value}
   function setStatus(text,cls='wait'){statusEl.textContent=text;statusEl.className='status '+cls}
@@ -113,6 +120,79 @@
   function normalizedDb(){return dbUrl.value.trim().replace(/\/+$/,'')}
   function safeRoom(){return(room.value.trim()||'quadra1').replace(/[.#$\[\]\/]/g,'_')}
   function roomUrl(path=''){return normalizedDb()+'/ballersScore/'+encodeURIComponent(safeRoom())+(path?'/'+path:'')+'.json'}
+
+  function openLocalAudioDb(){
+    return new Promise((resolve,reject)=>{
+      const req=indexedDB.open(LOCAL_AUDIO_DB,1);
+      req.onupgradeneeded=()=>{
+        const db=req.result;
+        if(!db.objectStoreNames.contains(LOCAL_AUDIO_STORE)){
+          db.createObjectStore(LOCAL_AUDIO_STORE,{keyPath:'id'});
+        }
+      };
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>reject(req.error||new Error('Falha ao abrir armazenamento local'));
+    });
+  }
+  async function idbGetAllAudios(){
+    const db=await openLocalAudioDb();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(LOCAL_AUDIO_STORE,'readonly');
+      const req=tx.objectStore(LOCAL_AUDIO_STORE).getAll();
+      req.onsuccess=()=>resolve(req.result||[]);
+      req.onerror=()=>reject(req.error||new Error('Falha ao carregar áudios locais'));
+      tx.oncomplete=()=>db.close();
+    });
+  }
+  async function idbPutAudio(record){
+    const db=await openLocalAudioDb();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(LOCAL_AUDIO_STORE,'readwrite');
+      tx.objectStore(LOCAL_AUDIO_STORE).put(record);
+      tx.oncomplete=()=>{db.close();resolve()};
+      tx.onerror=()=>{const err=tx.error;db.close();reject(err||new Error('Falha ao salvar áudio local'))};
+    });
+  }
+  async function idbDeleteAudio(id){
+    const db=await openLocalAudioDb();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(LOCAL_AUDIO_STORE,'readwrite');
+      tx.objectStore(LOCAL_AUDIO_STORE).delete(id);
+      tx.oncomplete=()=>{db.close();resolve()};
+      tx.onerror=()=>{const err=tx.error;db.close();reject(err||new Error('Falha ao remover áudio local'))};
+    });
+  }
+  async function idbClearAudios(){
+    const db=await openLocalAudioDb();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(LOCAL_AUDIO_STORE,'readwrite');
+      tx.objectStore(LOCAL_AUDIO_STORE).clear();
+      tx.oncomplete=()=>{db.close();resolve()};
+      tx.onerror=()=>{const err=tx.error;db.close();reject(err||new Error('Falha ao limpar áudios locais'))};
+    });
+  }
+  function revokeBlobUrls(){
+    for(const x of audioList){
+      try{if(x.url&&x.url.startsWith('blob:'))URL.revokeObjectURL(x.url)}catch(e){}
+    }
+  }
+  async function loadLocalAudios(){
+    try{
+      revokeBlobUrls();
+      const rows=await idbGetAllAudios();
+      audioList=rows.map(x=>({
+        id:x.id,
+        name:x.name||'audio.mp3',
+        size:x.size||0,
+        url:URL.createObjectURL(x.blob),
+        cloud:false,
+        persistent:true
+      }));
+      renderAudioList();
+    }catch(e){
+      showError('Não consegui carregar os MP3s salvos neste aparelho: '+e.message);
+    }
+  }
 
   async function firebaseGet(path=''){const r=await fetch(roomUrl(path),{cache:'no-store'});if(!r.ok)throw new Error('Firebase respondeu '+r.status);return await r.json()}
   async function firebasePut(path,value){const r=await fetch(roomUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!r.ok)throw new Error('Firebase respondeu '+r.status);return await r.json()}
@@ -129,7 +209,7 @@
   function startPolling(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(syncOnce,Number(syncEvery.value)||600)}
   async function connectCloud(){clearError();if(!normalizedDb().startsWith('https://')){setCloudStatus('Cole uma URL HTTPS válida do Firebase Realtime Database.',false,true);return}connectBtn.disabled=true;setCloudStatus('Conectando...');try{localStorage.setItem('ballers_dbUrl',normalizedDb());localStorage.setItem('ballers_room',safeRoom());await ensureRoom();cloudConnected=true;startPolling();setCloudStatus('Conectado à sala "'+safeRoom()+'". Placar, ajustes e áudios serão sincronizados.',true)}catch(e){cloudConnected=false;setCloudStatus('Não conectou: '+e.message+'. Verifique a URL e as regras do Database.',false,true)}finally{connectBtn.disabled=false}}
 
-  async function changeScore(team,delta,playSound=false){team=team==='B'?'B':'A';if(mode.value==='cloud'){if(!cloudConnected){showError('Conecte a sala do Firebase antes de pontuar no modo sincronizado.');return false}try{const current=clampScore(await firebaseGet('state/scores/'+team));const next=clampScore(current+delta);await firebasePut('state/scores/'+team,next);await firebasePut('state/updatedAt',Date.now());await syncOnce();if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}catch(e){showError('Não consegui alterar o placar online: '+e.message);return false}}else{localScores[team]=clampScore(localScores[team]+delta);renderScores(localScores.A,localScores.B);if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}}
+  async function changeScore(team,delta,playSound=false){team=team==='B'?'B':'A';if(mode.value==='cloud'){if(!cloudConnected){showError('Conecte a sala do Firebase antes de pontuar no modo sincronizado.');return false}try{const current=clampScore(await firebaseGet('state/scores/'+team));const next=clampScore(current+delta);await firebasePut('state/scores/'+team,next);await firebasePut('state/updatedAt',Date.now());await syncOnce();if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}catch(e){showError('Não consegui alterar o placar online: '+e.message);return false}}else{localScores[team]=clampScore(localScores[team]+delta);localStorage.setItem('ballers_localScores',JSON.stringify(localScores));renderScores(localScores.A,localScores.B);if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}}
 
   function basicBeep(){try{if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.frequency.value=880;gain.gain.setValueAtTime(.0001,audioCtx.currentTime);gain.gain.exponentialRampToValueAtTime(.3,audioCtx.currentTime+.01);gain.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+.18);osc.connect(gain);gain.connect(audioCtx.destination);osc.start();osc.stop(audioCtx.currentTime+.2)}catch(e){}}
   function playRandomCelebration(){if(!audioList.length){basicBeep();return}try{if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null}let index=Math.floor(Math.random()*audioList.length);if(audioList.length>1&&index===lastAudioIndex)index=(index+1+Math.floor(Math.random()*(audioList.length-1)))%audioList.length;lastAudioIndex=index;currentAudio=new Audio(audioList[index].url);currentAudio.volume=1;currentAudio.play().catch(()=>basicBeep())}catch(e){basicBeep()}}
@@ -144,14 +224,67 @@
       for(const f of valid){if(f.size>MAX_FILE){showError('"'+f.name+'" é maior que 2,5 MB. Use um clipe menor.');continue}if(existingTotal+f.size>MAX_TOTAL){showError('A biblioteca sincronizada atingiria o limite recomendado de ~12 MB.');break}const dataUrl=await fileToDataURL(f);const id='a_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);await firebasePut('audios/'+id,{name:f.name,size:f.size,dataUrl,uploadedAt:Date.now()});existingTotal+=f.size}
       await bumpAudioVersion();await fetchCloudAudios();
     }else{
-      for(const f of valid){const duplicate=audioList.some(x=>x.name===f.name&&x.size===f.size);if(!duplicate)audioList.push({id:'local_'+Date.now()+'_'+Math.random(),name:f.name,size:f.size,url:URL.createObjectURL(f),cloud:false})}renderAudioList();
+      for(const f of valid){
+        const duplicate=audioList.some(x=>x.name===f.name&&x.size===f.size);
+        if(duplicate) continue;
+        const id='local_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
+        await idbPutAudio({id,name:f.name,size:f.size,type:f.type||'audio/mpeg',lastModified:f.lastModified||Date.now(),blob:f});
+      }
+      await loadLocalAudios();
     }
     audioFiles.value='';
   }
-  async function removeAudio(index){const item=audioList[index];if(!item)return;if(item.cloud&&mode.value==='cloud'){if(!cloudConnected){showError('Conecte à sala para remover esse áudio.');return}try{await firebaseDelete('audios/'+item.id);await bumpAudioVersion();await fetchCloudAudios()}catch(e){showError('Erro ao remover áudio: '+e.message)}}else{try{if(item.url.startsWith('blob:'))URL.revokeObjectURL(item.url)}catch(e){}audioList.splice(index,1);renderAudioList()}}
-  async function clearAudios(){if(mode.value==='cloud'){if(!cloudConnected){showError('Conecte à sala primeiro.');return}try{await firebaseDelete('audios');await bumpAudioVersion();audioList=[];renderAudioList()}catch(e){showError('Erro ao limpar áudios: '+e.message)}}else{audioList.forEach(x=>{try{if(x.url.startsWith('blob:'))URL.revokeObjectURL(x.url)}catch(e){}});audioList=[];renderAudioList()}}
+  async function removeAudio(index){
+    const item=audioList[index];
+    if(!item)return;
+    if(item.cloud&&mode.value==='cloud'){
+      if(!cloudConnected){showError('Conecte à sala para remover esse áudio.');return}
+      try{
+        await firebaseDelete('audios/'+item.id);
+        await bumpAudioVersion();
+        await fetchCloudAudios();
+      }catch(e){showError('Erro ao remover áudio: '+e.message)}
+    }else{
+      try{
+        await idbDeleteAudio(item.id);
+        await loadLocalAudios();
+      }catch(e){showError('Erro ao remover áudio local: '+e.message)}
+    }
+  }
+  async function clearAudios(){
+    if(mode.value==='cloud'){
+      if(!cloudConnected){showError('Conecte à sala primeiro.');return}
+      try{
+        await firebaseDelete('audios');
+        await bumpAudioVersion();
+        audioList=[];
+        renderAudioList();
+      }catch(e){showError('Erro ao limpar áudios: '+e.message)}
+    }else{
+      try{
+        await idbClearAudios();
+        revokeBlobUrls();
+        audioList=[];
+        renderAudioList();
+      }catch(e){showError('Erro ao limpar áudios locais: '+e.message)}
+    }
+  }
 
-  function scheduleSettingsSave(){updateSettingLabels();if(mode.value!=='cloud'||!cloudConnected)return;if(settingsSaveTimer)clearTimeout(settingsSaveTimer);settingsSaveTimer=setTimeout(async()=>{try{await firebasePut('state/settings',currentSettings());await firebasePut('state/updatedAt',Date.now())}catch(e){}},350)}
+  function scheduleSettingsSave(){
+    updateSettingLabels();
+    if(mode.value==='local'){
+      localStorage.setItem('ballers_localSettings',JSON.stringify(currentSettings()));
+      return;
+    }
+    if(!cloudConnected)return;
+    if(settingsSaveTimer)clearTimeout(settingsSaveTimer);
+    settingsSaveTimer=setTimeout(async()=>{
+      try{
+        await firebasePut('state/settings',currentSettings());
+        await firebasePut('state/updatedAt',Date.now());
+      }catch(e){}
+    },350);
+  }
 
   function draw(predictions){ctx.clearRect(0,0,canvas.width,canvas.height);const minConf=Number(conf.value)/100,minAreaRatio=Number(size.value)/1000,frameArea=canvas.width*canvas.height;let best=null;for(const p of predictions){if(p.class!=='sports ball'||p.score<minConf)continue;if(!best||p.score>best.score)best=p}let qualifies=false;if(best){const[x,y,w,h]=best.bbox,areaRatio=(w*h)/frameArea;qualifies=areaRatio>=minAreaRatio;ctx.save();ctx.strokeStyle=qualifies?'#22c55e':'#f59e0b';ctx.fillStyle=qualifies?'#22c55e':'#f59e0b';ctx.lineWidth=Math.max(4,canvas.width/180);ctx.strokeRect(x,y,w,h);ctx.font=`bold ${Math.max(18,canvas.width/32)}px system-ui`;ctx.fillText(`sports ball ${Math.round(best.score*100)}%`,x,Math.max(28,y-8));ctx.fillText(`tam ${Math.round(areaRatio*1000)/10}%`,x,Math.min(canvas.height-12,y+h+24));ctx.restore()}return{qualifies}}
   async function registerDetectedPoint(){const team=selectedTeam(),ok=await changeScore(team,1,true);if(ok){setStatus('✅ +1 TIME '+team+'! RETIRE A BOLA','hit');if(navigator.vibrate)navigator.vibrate(100)}else setStatus('ERRO AO PONTUAR','wait')}
@@ -161,13 +294,53 @@
   startBtn.addEventListener('click',async()=>{try{if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')await audioCtx.resume()}catch(e){}startCamera()});
   manualPointBtn.addEventListener('click',()=>changeScore(selectedTeam(),1,true));plusA.addEventListener('click',()=>changeScore('A',1,true));minusA.addEventListener('click',()=>changeScore('A',-1,false));plusB.addEventListener('click',()=>changeScore('B',1,true));minusB.addEventListener('click',()=>changeScore('B',-1,false));
   deviceTeam.addEventListener('change',()=>{localStorage.setItem('ballers_deviceTeam',deviceTeam.value);highlightDevice();if(running&&armed)setStatus('PRONTO — TIME '+selectedTeam(),'ready')});
-  mode.addEventListener('change',async()=>{cloudPanel.style.display=mode.value==='cloud'?'block':'none';if(mode.value==='local'){cloudConnected=false;if(pollTimer){clearInterval(pollTimer);pollTimer=null}renderScores(localScores.A,localScores.B);audioList=[];renderAudioList()}else if(cloudConnected){await fetchCloudAudios()}});
+  mode.addEventListener('change',async()=>{
+    localStorage.setItem('ballers_mode',mode.value);
+    cloudPanel.style.display=mode.value==='cloud'?'block':'none';
+    if(mode.value==='local'){
+      cloudConnected=false;
+      if(pollTimer){clearInterval(pollTimer);pollTimer=null}
+      renderScores(localScores.A,localScores.B);
+      try{
+        const s=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
+        if(s)applySettings(s);
+      }catch(e){}
+      await loadLocalAudios();
+    }else{
+      revokeBlobUrls();
+      audioList=[];
+      renderAudioList();
+      if(normalizedDb().startsWith('https://')) await connectCloud();
+    }
+  });
+  dbUrl.addEventListener('change',()=>localStorage.setItem('ballers_dbUrl',normalizedDb()));
+  room.addEventListener('change',()=>localStorage.setItem('ballers_room',safeRoom()));
   connectBtn.addEventListener('click',connectCloud);syncEvery.addEventListener('change',()=>{if(cloudConnected)startPolling()});resetCloudBtn.addEventListener('click',async()=>{if(mode.value!=='cloud'||!cloudConnected){showError('Conecte ao Firebase primeiro.');return}try{await firebasePut('state/scores',{A:0,B:0});await firebasePut('state/updatedAt',Date.now());await syncOnce()}catch(e){showError('Erro ao zerar: '+e.message)}});
   audioFiles.addEventListener('change',()=>addFiles(audioFiles.files));testAudioBtn.addEventListener('click',playRandomCelebration);clearAudioBtn.addEventListener('click',clearAudios);
   [conf,size,rearm,frames].forEach(el=>el.addEventListener('input',scheduleSettingsSave));
   document.addEventListener('visibilitychange',async()=>{if(document.visibilityState==='visible'&&running&&'wakeLock'in navigator){try{wakeLock=await navigator.wakeLock.request('screen')}catch(e){}}});
 
-  highlightDevice();renderScores(0,0);updateSettingLabels();renderAudioList();
+  async function initializePersistentState(){
+    highlightDevice();
+    updateSettingLabels();
+    if(mode.value==='local'){
+      renderScores(localScores.A,localScores.B);
+      try{
+        const s=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
+        if(s)applySettings(s);
+      }catch(e){}
+      await loadLocalAudios();
+    }else{
+      renderScores(0,0);
+      renderAudioList();
+      if(normalizedDb().startsWith('https://')){
+        await connectCloud();
+      }else{
+        setCloudStatus('Modo sincronizado salvo, mas falta a URL do Firebase.');
+      }
+    }
+  }
+  initializePersistentState();
 })();
 </script>
 </body>
