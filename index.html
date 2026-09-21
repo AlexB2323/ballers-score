@@ -28,7 +28,7 @@
 </head>
 <body>
 <main class="app">
-  <h1>🏀 Ballers Score <span class="badge">SYNC TOTAL</span></h1>
+  <h1>🏀 Ballers Score — GitHub Audio</h1>
 
   <section class="scores">
     <div id="cardA" class="team team-a active"><div class="team-name">TIME A</div><div id="scoreA" class="team-score">0</div><div class="mini-controls"><button id="plusA">+1</button><button id="minusA">−1</button></div></div>
@@ -75,7 +75,11 @@
     <div class="row"><label for="frames">Frames seguidos: <strong id="framesValue">3</strong></label><input id="frames" type="range" min="1" max="8" value="3" step="1"></div>
   </section>
 
-  <p class="hint"><strong>O que sincroniza:</strong> placar, configurações de detecção e biblioteca de MP3s. A escolha “este celular = Time A/Time B” fica local de propósito, porque cada aparelho precisa poder representar um time diferente. O código do site fica igual em todos quando ambos abrem a mesma URL hospedada; ao atualizar o arquivo no GitHub Pages, basta recarregar a página nos celulares.</p>
+  <p class="hint">
+    Coloque seus MP3s na pasta <strong>audios/</strong> do repositório e liste os nomes em <strong>audios.json</strong>.
+    Como tudo fica hospedado no GitHub Pages, computador e celular carregam exatamente os mesmos áudios.
+    O placar ao vivo entre dois celulares ainda precisa de Firebase; o GitHub Pages sincroniza o site e os arquivos, não dados em tempo real.
+  </p>
   <div id="error" class="error"></div>
 </main>
 
@@ -89,7 +93,7 @@
   const statusEl=$('status'),startBtn=$('startBtn'),manualPointBtn=$('manualPointBtn');
   const plusA=$('plusA'),minusA=$('minusA'),plusB=$('plusB'),minusB=$('minusB');
   const deviceTeam=$('deviceTeam'),mode=$('mode'),cloudPanel=$('cloudPanel'),dbUrl=$('dbUrl'),room=$('room'),syncEvery=$('syncEvery'),connectBtn=$('connectBtn'),shareLinkBtn=$('shareLinkBtn'),syncLocalAudiosBtn=$('syncLocalAudiosBtn'),resetCloudBtn=$('resetCloudBtn'),cloudStatus=$('cloudStatus'),errorEl=$('error');
-  const audioFiles=$('audioFiles'),audioInfo=$('audioInfo'),audioListView=$('audioListView'),testAudioBtn=$('testAudioBtn'),clearAudioBtn=$('clearAudioBtn');
+  const audioInfo=$('audioInfo'),audioListView=$('audioListView'),reloadAudiosBtn=$('reloadAudiosBtn'),testAudioBtn=$('testAudioBtn');
   const conf=$('conf'),size=$('size'),rearm=$('rearm'),frames=$('frames'),confValue=$('confValue'),sizeValue=$('sizeValue'),rearmValue=$('rearmValue'),framesValue=$('framesValue');
 
   let model=null,running=false,armed=true,lostSince=null,qualifyingFrames=0,wakeLock=null;
@@ -241,7 +245,7 @@
         cloud:false,
         persistent:true
       }));
-      renderAudioList();
+      
     }catch(e){
       showError('Não consegui carregar os MP3s salvos neste aparelho: '+e.message);
     }
@@ -282,7 +286,7 @@
       // Important: upload any MP3s already stored locally on this device,
       // then reload the shared library.
       const result=await uploadLocalAudiosToCloud();
-      await fetchCloudAudios();
+      
 
       startPolling();
       const extra=result.uploaded
@@ -302,63 +306,6 @@
 
   function basicBeep(){try{if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.frequency.value=880;gain.gain.setValueAtTime(.0001,audioCtx.currentTime);gain.gain.exponentialRampToValueAtTime(.3,audioCtx.currentTime+.01);gain.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+.18);osc.connect(gain);gain.connect(audioCtx.destination);osc.start();osc.stop(audioCtx.currentTime+.2)}catch(e){}}
   function playRandomCelebration(){if(!audioList.length){basicBeep();return}try{if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null}let index=Math.floor(Math.random()*audioList.length);if(audioList.length>1&&index===lastAudioIndex)index=(index+1+Math.floor(Math.random()*(audioList.length-1)))%audioList.length;lastAudioIndex=index;currentAudio=new Audio(audioList[index].url);currentAudio.volume=1;currentAudio.play().catch(()=>basicBeep())}catch(e){basicBeep()}}
-  function renderAudioList(){audioListView.innerHTML='';if(!audioList.length){audioInfo.textContent=mode.value==='cloud'?'Nenhum MP3 nesta sala ainda.':'Nenhum MP3 adicionado. Será usado um bip.';return}audioInfo.textContent=audioList.length+' áudio(s) disponíveis. Cada cesta escolhe um deles aleatoriamente.';audioList.forEach((item,index)=>{const li=document.createElement('li');li.className='audio-item';const name=document.createElement('span');name.textContent=(index+1)+'. '+item.name+(item.cloud?' ☁️':'');const remove=document.createElement('button');remove.type='button';remove.className='audio-remove';remove.textContent='Remover';remove.addEventListener('click',()=>removeAudio(index));li.append(name,remove);audioListView.appendChild(li)})}
-  function fileToDataURL(file){return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(fr.result);fr.onerror=()=>reject(fr.error||new Error('Falha ao ler arquivo'));fr.readAsDataURL(file)})}
-  async function fetchCloudAudios(){if(!normalizedDb())return;const data=await firebaseGet('audios');audioList=[];if(data&&typeof data==='object'){for(const [id,item] of Object.entries(data)){if(item&&item.dataUrl)audioList.push({id,name:item.name||'audio.mp3',url:item.dataUrl,size:item.size||0,cloud:true})}}renderAudioList()}
-  async function bumpAudioVersion(){const v=Date.now();lastAudioVersion=v;await firebasePut('state/audiosVersion',v)}
-  async function addFiles(files){clearError();const valid=[...files].filter(f=>f.type.startsWith('audio/')||/\.mp3$/i.test(f.name));if(!valid.length)return;
-    if(mode.value==='cloud'){
-      if(!cloudConnected){showError('Conecte a sala antes de enviar MP3s para os outros celulares.');audioFiles.value='';return}
-      let existingTotal=audioList.reduce((sum,x)=>sum+(x.size||0),0);
-      for(const f of valid){if(f.size>MAX_FILE){showError('"'+f.name+'" é maior que 2,5 MB. Use um clipe menor.');continue}if(existingTotal+f.size>MAX_TOTAL){showError('A biblioteca sincronizada atingiria o limite recomendado de ~12 MB.');break}const dataUrl=await fileToDataURL(f);const id='a_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);await firebasePut('audios/'+id,{name:f.name,size:f.size,dataUrl,uploadedAt:Date.now()});existingTotal+=f.size}
-      await bumpAudioVersion();await fetchCloudAudios();
-    }else{
-      for(const f of valid){
-        const duplicate=audioList.some(x=>x.name===f.name&&x.size===f.size);
-        if(duplicate) continue;
-        const id='local_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
-        await idbPutAudio({id,name:f.name,size:f.size,type:f.type||'audio/mpeg',lastModified:f.lastModified||Date.now(),blob:f});
-      }
-      await loadLocalAudios();
-    }
-    audioFiles.value='';
-  }
-  async function removeAudio(index){
-    const item=audioList[index];
-    if(!item)return;
-    if(item.cloud&&mode.value==='cloud'){
-      if(!cloudConnected){showError('Conecte à sala para remover esse áudio.');return}
-      try{
-        await firebaseDelete('audios/'+item.id);
-        await bumpAudioVersion();
-        await fetchCloudAudios();
-      }catch(e){showError('Erro ao remover áudio: '+e.message)}
-    }else{
-      try{
-        await idbDeleteAudio(item.id);
-        await loadLocalAudios();
-      }catch(e){showError('Erro ao remover áudio local: '+e.message)}
-    }
-  }
-  async function clearAudios(){
-    if(mode.value==='cloud'){
-      if(!cloudConnected){showError('Conecte à sala primeiro.');return}
-      try{
-        await firebaseDelete('audios');
-        await bumpAudioVersion();
-        audioList=[];
-        renderAudioList();
-      }catch(e){showError('Erro ao limpar áudios: '+e.message)}
-    }else{
-      try{
-        await idbClearAudios();
-        revokeBlobUrls();
-        audioList=[];
-        renderAudioList();
-      }catch(e){showError('Erro ao limpar áudios locais: '+e.message)}
-    }
-  }
-
   function scheduleSettingsSave(){
     updateSettingLabels();
     if(mode.value==='local'){
@@ -374,6 +321,64 @@
       }catch(e){}
     },350);
   }
+
+
+  let githubAudios=[];
+  let lastGithubAudio=-1;
+
+  async function loadGithubAudios(){
+    try{
+      audioInfo.textContent='Carregando áudios do GitHub...';
+      const response=await fetch('audios.json?ts='+Date.now(),{cache:'no-store'});
+      if(!response.ok) throw new Error('audios.json não encontrado ('+response.status+')');
+      const data=await response.json();
+      if(!Array.isArray(data.audios)) throw new Error('Formato inválido em audios.json');
+
+      githubAudios=data.audios
+        .filter(x=>typeof x==='string' && x.trim())
+        .map(x=>x.trim());
+
+      audioListView.innerHTML='';
+      if(!githubAudios.length){
+        audioInfo.textContent='Nenhum áudio listado em audios.json.';
+        return;
+      }
+
+      githubAudios.forEach((name,i)=>{
+        const li=document.createElement('li');
+        li.className='audioItem';
+        li.textContent=(i+1)+'. '+name;
+        audioListView.appendChild(li);
+      });
+
+      audioInfo.textContent=githubAudios.length+' áudio(s) disponíveis no GitHub. PC e celular usarão a mesma lista.';
+    }catch(e){
+      githubAudios=[];
+      audioListView.innerHTML='';
+      audioInfo.textContent='Erro ao carregar os áudios: '+e.message;
+    }
+  }
+
+  function playRandomCelebration(){
+    if(!githubAudios.length){ basicBeep(); return; }
+    try{
+      if(currentAudio){ currentAudio.pause(); currentAudio.currentTime=0; }
+      let idx=Math.floor(Math.random()*githubAudios.length);
+      if(githubAudios.length>1 && idx===lastGithubAudio){
+        idx=(idx+1+Math.floor(Math.random()*(githubAudios.length-1)))%githubAudios.length;
+      }
+      lastGithubAudio=idx;
+      const file=githubAudios[idx];
+      currentAudio=new Audio('audios/'+encodeURIComponent(file).replace(/%2F/g,'/'));
+      currentAudio.volume=1;
+      currentAudio.play().catch(()=>basicBeep());
+    }catch(e){
+      basicBeep();
+    }
+  }
+
+  reloadAudiosBtn.addEventListener('click',loadGithubAudios);
+  testAudioBtn.addEventListener('click',playRandomCelebration);
 
   function draw(predictions){ctx.clearRect(0,0,canvas.width,canvas.height);const minConf=Number(conf.value)/100,minAreaRatio=Number(size.value)/1000,frameArea=canvas.width*canvas.height;let best=null;for(const p of predictions){if(p.class!=='sports ball'||p.score<minConf)continue;if(!best||p.score>best.score)best=p}let qualifies=false;if(best){const[x,y,w,h]=best.bbox,areaRatio=(w*h)/frameArea;qualifies=areaRatio>=minAreaRatio;ctx.save();ctx.strokeStyle=qualifies?'#22c55e':'#f59e0b';ctx.fillStyle=qualifies?'#22c55e':'#f59e0b';ctx.lineWidth=Math.max(4,canvas.width/180);ctx.strokeRect(x,y,w,h);ctx.font=`bold ${Math.max(18,canvas.width/32)}px system-ui`;ctx.fillText(`sports ball ${Math.round(best.score*100)}%`,x,Math.max(28,y-8));ctx.fillText(`tam ${Math.round(areaRatio*1000)/10}%`,x,Math.min(canvas.height-12,y+h+24));ctx.restore()}return{qualifies}}
   async function registerDetectedPoint(){const team=selectedTeam(),ok=await changeScore(team,1,true);if(ok){setStatus('✅ +1 TIME '+team+'! RETIRE A BOLA','hit');if(navigator.vibrate)navigator.vibrate(100)}else setStatus('ERRO AO PONTUAR','wait')}
@@ -394,11 +399,11 @@
         const s=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
         if(s)applySettings(s);
       }catch(e){}
-      await loadLocalAudios();
+      
     }else{
       revokeBlobUrls();
       audioList=[];
-      renderAudioList();
+      
       if(normalizedDb().startsWith('https://')) await connectCloud();
     }
   });
@@ -431,7 +436,7 @@
     setCloudStatus('Enviando MP3s locais para a sala...');
     try{
       const r=await uploadLocalAudiosToCloud();
-      await fetchCloudAudios();
+      
       setCloudStatus(
         `Sincronização concluída: ${r.uploaded} enviado(s), ${r.skipped} já existente(s)/ignorado(s).`,
         true
@@ -445,8 +450,7 @@
 
   dbUrl.addEventListener('change',()=>localStorage.setItem('ballers_dbUrl',normalizedDb()));
   room.addEventListener('change',()=>localStorage.setItem('ballers_room',safeRoom()));
-  connectBtn.addEventListener('click',connectCloud);syncEvery.addEventListener('change',()=>{if(cloudConnected)startPolling()});resetCloudBtn.addEventListener('click',async()=>{if(mode.value!=='cloud'||!cloudConnected){showError('Conecte ao Firebase primeiro.');return}try{await firebasePut('state/scores',{A:0,B:0});await firebasePut('state/updatedAt',Date.now());await syncOnce()}catch(e){showError('Erro ao zerar: '+e.message)}});
-  audioFiles.addEventListener('change',()=>addFiles(audioFiles.files));testAudioBtn.addEventListener('click',playRandomCelebration);clearAudioBtn.addEventListener('click',clearAudios);
+  connectBtn.addEventListener('click',connectCloud);syncEvery.addEventListener('change',()=>{if(cloudConnected)startPolling()});resetCloudBtn.addEventListener('click',async()=>{if(mode.value!=='cloud'||!cloudConnected){showError('Conecte ao Firebase primeiro.');return}try{await firebasePut('state/scores',{A:0,B:0});await firebasePut('state/updatedAt',Date.now());await syncOnce()}catch(e){showError('Erro ao zerar: '+e.message)}});testAudioBtn.addEventListener('click',playRandomCelebration);clearAudioBtn.addEventListener('click',clearAudios);
   [conf,size,rearm,frames].forEach(el=>el.addEventListener('input',scheduleSettingsSave));
   document.addEventListener('visibilitychange',async()=>{if(document.visibilityState==='visible'&&running&&'wakeLock'in navigator){try{wakeLock=await navigator.wakeLock.request('screen')}catch(e){}}});
 
@@ -459,10 +463,10 @@
         const s=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
         if(s)applySettings(s);
       }catch(e){}
-      await loadLocalAudios();
+      
     }else{
       renderScores(0,0);
-      renderAudioList();
+      
       if(normalizedDb().startsWith('https://')){
         await connectCloud();
       }else{
@@ -471,6 +475,7 @@
     }
   }
   initializePersistentState();
+  loadGithubAudios();
 })();
 </script>
 </body>
