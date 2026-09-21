@@ -50,7 +50,7 @@
       <div class="field"><label for="room">Sala</label><input id="room" value="quadra1" maxlength="48"></div>
       <div class="field"><label for="syncEvery">Atualização do placar</label><select id="syncEvery"><option value="350">0,35 s</option><option value="600" selected>0,6 s</option><option value="1000">1 s</option></select></div>
     </div>
-    <div class="cloud-actions"><button id="connectBtn" class="secondary">Conectar sala</button><button id="resetCloudBtn" class="danger">Zerar ambos</button></div>
+    <div class="cloud-actions"><button id="connectBtn" class="secondary">Conectar / sincronizar</button><button id="shareLinkBtn">Copiar link da sala</button></div><div class="cloud-actions"><button id="syncLocalAudiosBtn">☁️ Enviar MP3s deste aparelho</button><button id="resetCloudBtn" class="danger">Zerar ambos</button></div>
     <div id="cloudStatus" class="cloud-status">Ainda não conectado.</div>
   </section>
 
@@ -60,7 +60,7 @@
     <div id="audioInfo" class="audio-info">Você pode escolher vários MP3s. No modo local, eles ficam salvos neste aparelho mesmo após F5. No modo sincronizado, ficam salvos na sala e aparecem também nos outros aparelhos.</div>
     <ul id="audioListView" class="audio-list"></ul>
     <div class="audio-actions"><button id="testAudioBtn">▶ Testar aleatório</button><button id="clearAudioBtn" class="danger">Limpar áudios</button></div>
-    <p class="small">Os MP3s locais são guardados no navegador deste aparelho (IndexedDB). Os MP3s sincronizados ficam na sala do Firebase. Use clipes curtos: cada arquivo sincronizado pode ter até 2,5 MB e o total da sala até aproximadamente 12 MB.</p>
+    <p class="small">No modo sincronizado, os MP3s ficam na sala online e aparecem automaticamente no computador e nos celulares. Ao conectar, o site também envia para a sala os MP3s que já estavam salvos localmente neste aparelho. Use clipes curtos: até 2,5 MB por arquivo e ~12 MB por sala.</p>
   </section>
 
   <section class="camera"><video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas><div class="banner">MOSTRE A BOLA EM QUALQUER PARTE DA CÂMERA</div></section>
@@ -88,7 +88,7 @@
   const scoreA=$('scoreA'),scoreB=$('scoreB'),cardA=$('cardA'),cardB=$('cardB');
   const statusEl=$('status'),startBtn=$('startBtn'),manualPointBtn=$('manualPointBtn');
   const plusA=$('plusA'),minusA=$('minusA'),plusB=$('plusB'),minusB=$('minusB');
-  const deviceTeam=$('deviceTeam'),mode=$('mode'),cloudPanel=$('cloudPanel'),dbUrl=$('dbUrl'),room=$('room'),syncEvery=$('syncEvery'),connectBtn=$('connectBtn'),resetCloudBtn=$('resetCloudBtn'),cloudStatus=$('cloudStatus'),errorEl=$('error');
+  const deviceTeam=$('deviceTeam'),mode=$('mode'),cloudPanel=$('cloudPanel'),dbUrl=$('dbUrl'),room=$('room'),syncEvery=$('syncEvery'),connectBtn=$('connectBtn'),shareLinkBtn=$('shareLinkBtn'),syncLocalAudiosBtn=$('syncLocalAudiosBtn'),resetCloudBtn=$('resetCloudBtn'),cloudStatus=$('cloudStatus'),errorEl=$('error');
   const audioFiles=$('audioFiles'),audioInfo=$('audioInfo'),audioListView=$('audioListView'),testAudioBtn=$('testAudioBtn'),clearAudioBtn=$('clearAudioBtn');
   const conf=$('conf'),size=$('size'),rearm=$('rearm'),frames=$('frames'),confValue=$('confValue'),sizeValue=$('sizeValue'),rearmValue=$('rearmValue'),framesValue=$('framesValue');
 
@@ -106,6 +106,12 @@
   mode.value=localStorage.getItem('ballers_mode')||'local';
   dbUrl.value=localStorage.getItem('ballers_dbUrl')||'';
   room.value=localStorage.getItem('ballers_room')||'quadra1';
+  try{
+    const params=new URLSearchParams(location.search);
+    if(params.get('db')) dbUrl.value=params.get('db');
+    if(params.get('room')) room.value=params.get('room');
+    if(params.get('sync')==='1') mode.value='cloud';
+  }catch(e){}
   cloudPanel.style.display=mode.value==='cloud'?'block':'none';
 
   function selectedTeam(){return deviceTeam.value}
@@ -144,6 +150,53 @@
       tx.oncomplete=()=>db.close();
     });
   }
+  function blobToDataURL(blob){
+    return new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=()=>reject(reader.error||new Error('Falha ao ler MP3'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function uploadLocalAudiosToCloud(){
+    if(!cloudConnected) throw new Error('Conecte a sala primeiro.');
+    const localRows=await idbGetAllAudios();
+    if(!localRows.length) return {uploaded:0,skipped:0};
+
+    const cloudData=await firebaseGet('audios') || {};
+    const existing=new Set(
+      Object.values(cloudData)
+        .filter(Boolean)
+        .map(x=>(x.name||'')+'|'+(Number(x.size)||0))
+    );
+
+    let uploaded=0, skipped=0;
+    let total=Object.values(cloudData).reduce((sum,x)=>sum+(Number(x?.size)||0),0);
+
+    for(const row of localRows){
+      const key=(row.name||'audio.mp3')+'|'+(Number(row.size)||0);
+      if(existing.has(key)){ skipped++; continue; }
+      if((Number(row.size)||0)>MAX_FILE){ skipped++; continue; }
+      if(total+(Number(row.size)||0)>MAX_TOTAL) break;
+
+      const dataUrl=await blobToDataURL(row.blob);
+      const id='a_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+      await firebasePut('audios/'+id,{
+        name:row.name||'audio.mp3',
+        size:Number(row.size)||0,
+        dataUrl,
+        uploadedAt:Date.now()
+      });
+      total+=Number(row.size)||0;
+      existing.add(key);
+      uploaded++;
+    }
+
+    if(uploaded) await bumpAudioVersion();
+    return {uploaded,skipped};
+  }
+
   async function idbPutAudio(record){
     const db=await openLocalAudioDb();
     return new Promise((resolve,reject)=>{
@@ -207,7 +260,43 @@
 
   async function syncOnce(){if(!cloudConnected)return;try{const state=await firebaseGet('state');if(state){renderState(state);setCloudStatus('Conectado à sala "'+safeRoom()+'".',true)}}catch(e){setCloudStatus('Falha ao sincronizar: '+e.message,false,true)}}
   function startPolling(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(syncOnce,Number(syncEvery.value)||600)}
-  async function connectCloud(){clearError();if(!normalizedDb().startsWith('https://')){setCloudStatus('Cole uma URL HTTPS válida do Firebase Realtime Database.',false,true);return}connectBtn.disabled=true;setCloudStatus('Conectando...');try{localStorage.setItem('ballers_dbUrl',normalizedDb());localStorage.setItem('ballers_room',safeRoom());await ensureRoom();cloudConnected=true;startPolling();setCloudStatus('Conectado à sala "'+safeRoom()+'". Placar, ajustes e áudios serão sincronizados.',true)}catch(e){cloudConnected=false;setCloudStatus('Não conectou: '+e.message+'. Verifique a URL e as regras do Database.',false,true)}finally{connectBtn.disabled=false}}
+  async function connectCloud(){
+    clearError();
+    if(!normalizedDb().startsWith('https://')){
+      setCloudStatus('Cole uma URL HTTPS válida do Firebase Realtime Database.',false,true);
+      return;
+    }
+    connectBtn.disabled=true;
+    syncLocalAudiosBtn.disabled=true;
+    setCloudStatus('Conectando e sincronizando...');
+    try{
+      localStorage.setItem('ballers_dbUrl',normalizedDb());
+      localStorage.setItem('ballers_room',safeRoom());
+      localStorage.setItem('ballers_mode','cloud');
+      mode.value='cloud';
+      cloudPanel.style.display='block';
+
+      await ensureRoom();
+      cloudConnected=true;
+
+      // Important: upload any MP3s already stored locally on this device,
+      // then reload the shared library.
+      const result=await uploadLocalAudiosToCloud();
+      await fetchCloudAudios();
+
+      startPolling();
+      const extra=result.uploaded
+        ? ` ${result.uploaded} MP3(s) local(is) enviado(s) para a sala.`
+        : '';
+      setCloudStatus('Conectado à sala "'+safeRoom()+'". Áudios, placar e ajustes estão sincronizados.'+extra,true);
+    }catch(e){
+      cloudConnected=false;
+      setCloudStatus('Não conectou: '+e.message+'. Verifique a URL e as regras do Database.',false,true);
+    }finally{
+      connectBtn.disabled=false;
+      syncLocalAudiosBtn.disabled=false;
+    }
+  }
 
   async function changeScore(team,delta,playSound=false){team=team==='B'?'B':'A';if(mode.value==='cloud'){if(!cloudConnected){showError('Conecte a sala do Firebase antes de pontuar no modo sincronizado.');return false}try{const current=clampScore(await firebaseGet('state/scores/'+team));const next=clampScore(current+delta);await firebasePut('state/scores/'+team,next);await firebasePut('state/updatedAt',Date.now());await syncOnce();if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}catch(e){showError('Não consegui alterar o placar online: '+e.message);return false}}else{localScores[team]=clampScore(localScores[team]+delta);localStorage.setItem('ballers_localScores',JSON.stringify(localScores));renderScores(localScores.A,localScores.B);if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}return true}}
 
@@ -313,6 +402,47 @@
       if(normalizedDb().startsWith('https://')) await connectCloud();
     }
   });
+  shareLinkBtn.addEventListener('click',async()=>{
+    clearError();
+    if(!normalizedDb().startsWith('https://')){
+      showError('Preencha a URL do Firebase primeiro.');
+      return;
+    }
+    const u=new URL(location.href);
+    u.searchParams.set('db',normalizedDb());
+    u.searchParams.set('room',safeRoom());
+    u.searchParams.set('sync','1');
+    const link=u.toString();
+    try{
+      await navigator.clipboard.writeText(link);
+      setCloudStatus('Link da sala copiado. Abra esse link no outro celular.',true);
+    }catch(e){
+      window.prompt('Copie este link e abra no outro celular:',link);
+    }
+  });
+
+  syncLocalAudiosBtn.addEventListener('click',async()=>{
+    clearError();
+    if(!cloudConnected){
+      await connectCloud();
+      if(!cloudConnected) return;
+    }
+    syncLocalAudiosBtn.disabled=true;
+    setCloudStatus('Enviando MP3s locais para a sala...');
+    try{
+      const r=await uploadLocalAudiosToCloud();
+      await fetchCloudAudios();
+      setCloudStatus(
+        `Sincronização concluída: ${r.uploaded} enviado(s), ${r.skipped} já existente(s)/ignorado(s).`,
+        true
+      );
+    }catch(e){
+      showError('Erro ao sincronizar MP3s: '+e.message);
+    }finally{
+      syncLocalAudiosBtn.disabled=false;
+    }
+  });
+
   dbUrl.addEventListener('change',()=>localStorage.setItem('ballers_dbUrl',normalizedDb()));
   room.addEventListener('change',()=>localStorage.setItem('ballers_room',safeRoom()));
   connectBtn.addEventListener('click',connectCloud);syncEvery.addEventListener('change',()=>{if(cloudConnected)startPolling()});resetCloudBtn.addEventListener('click',async()=>{if(mode.value!=='cloud'||!cloudConnected){showError('Conecte ao Firebase primeiro.');return}try{await firebasePut('state/scores',{A:0,B:0});await firebasePut('state/updatedAt',Date.now());await syncOnce()}catch(e){showError('Erro ao zerar: '+e.message)}});
@@ -336,7 +466,7 @@
       if(normalizedDb().startsWith('https://')){
         await connectCloud();
       }else{
-        setCloudStatus('Modo sincronizado salvo, mas falta a URL do Firebase.');
+        setCloudStatus('Para sincronizar entre PC e celular, informe uma URL do Firebase e conecte a mesma sala nos dois aparelhos.');
       }
     }
   }
