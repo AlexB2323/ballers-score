@@ -186,14 +186,14 @@
 
     <p class="small">
       Ao iniciar a câmera, deixe a imagem sem ninguém na frente por cerca de 1 segundo.
-      Depois, qualquer objeto grande o suficiente que entrar ou se mover na imagem pode registrar o ponto.
+      Depois, qualquer movimento significativo na imagem já pode registrar o ponto: bola, mão, braço ou outro objeto.
     </p>
   </section>
 
   <p class="hint">
     Para PC e celular compartilharem áudios, ambos precisam estar no <strong>modo sincronizado</strong>,
     usando a <strong>mesma URL do Firebase</strong> e a <strong>mesma sala</strong>.
-    A escolha Time A/Time B continua independente em cada aparelho. Nesta versão não existe reconhecimento de bola: a câmera funciona como um sensor de movimento. Movimento significativo → +1 → áudio aleatório → espera a cena voltar ao normal para liberar o próximo ponto.
+    A escolha Time A/Time B continua independente em cada aparelho. Nesta versão não existe reconhecimento de bola: a câmera funciona como um sensor de movimento. Qualquer movimento significativo → +1 → áudio aleatório → espera a cena voltar ao normal → libera o próximo ponto.
   </p>
 
   <div id="error" class="error"></div>
@@ -806,7 +806,6 @@
     const rgba=motionCtx.getImageData(0,0,motionFrameWidth,motionFrameHeight).data;
     const gray=new Uint8Array(motionFrameWidth*motionFrameHeight);
 
-    // Luminância. Mais barato e mais estável do que comparar RGB completo.
     for(let i=0,p=0;i<rgba.length;i+=4,p++){
       gray[p]=(rgba[i]*77 + rgba[i+1]*150 + rgba[i+2]*29)>>8
     }
@@ -845,10 +844,10 @@
 
     if(!backgroundFrame||backgroundFrame.length!==current.length){
       backgroundFrame=Float32Array.from(current);
-      return 0
+      return {percent:0,current}
     }
 
-    // Compensa mudanças globais de brilho/exposição do celular.
+    // Remove variação global de brilho/exposição.
     let globalDelta=0;
     for(let i=0;i<current.length;i++){
       globalDelta+=current[i]-backgroundFrame[i]
@@ -865,18 +864,17 @@
 
     const percent=changed/current.length*100;
 
-    // Se o cenário está praticamente parado e o sistema está pronto,
-    // adapta o fundo bem devagar a variações naturais de iluminação.
+    // Quando está armado e quase parado, adapta o fundo lentamente.
     const minimumMotion=Number(size.value)/10;
-    if(armed && percent<Math.max(.35,minimumMotion*.28)){
-      const alpha=.025;
+    if(armed && percent<Math.max(0.30,minimumMotion*0.25)){
+      const alpha=0.03;
       for(let i=0;i<current.length;i++){
         backgroundFrame[i]=backgroundFrame[i]*(1-alpha)+current[i]*alpha
       }
     }
 
     lastMotionPercent=percent;
-    return percent
+    return {percent,current}
   }
 
   async function calibrateBackground(){
@@ -891,7 +889,7 @@
     setStatus('🎯 CALIBRANDO — DEIXE A CÂMERA PARADA','wait');
     motionMeter.textContent='Calibrando o fundo...';
 
-    const count=12;
+    const count=10;
     let sum=null;
 
     try{
@@ -899,13 +897,15 @@
         const frame=captureGrayFrame();
         if(!sum)sum=new Float32Array(frame.length);
         for(let i=0;i<frame.length;i++)sum[i]+=frame[i];
-        await new Promise(r=>setTimeout(r,65))
+        await new Promise(r=>setTimeout(r,60))
       }
 
       backgroundFrame=new Float32Array(sum.length);
       for(let i=0;i<sum.length;i++)backgroundFrame[i]=sum[i]/count;
 
       armed=true;
+      qualifyingFrames=0;
+      lostSince=null;
       setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready');
       motionMeter.textContent='Movimento detectado: 0.0%'
     }catch(e){
@@ -921,59 +921,55 @@
     if(ok){
       setStatus('✅ +1 TIME '+team+'! RETIRE O OBJETO','hit');
       if(navigator.vibrate)navigator.vibrate(100)
-    }else setStatus('ERRO AO PONTUAR','wait')
+    }else{
+      setStatus('ERRO AO PONTUAR','wait')
+    }
   }
 
   async function detectionLoop(){
-    if(!running)return;
+    if(!running){
+      return
+    }
 
     if(motionLoopBusy||calibrating){
-      setTimeout(detectionLoop,55);
+      setTimeout(detectionLoop,45);
       return
     }
 
     motionLoopBusy=true;
 
     try{
-      const percent=analyzeMotion();
+      const {percent,current}=analyzeMotion();
       const minimumMotion=Number(size.value)/10;
-      const stableLimit=Math.max(.35,minimumMotion*.38);
+      const stableLimit=Math.max(0.45,minimumMotion*0.35);
       const triggered=percent>=minimumMotion;
       const now=performance.now();
-      const rearmMs=Number(rearm.value)*100;
-      const neededFrames=Number(frames.value);
 
       drawMotionOverlay(percent,triggered);
 
       if(armed){
+        // Qualquer movimento acima do limiar já pontua.
         if(triggered){
-          qualifyingFrames++;
-          setStatus('⚡ MOVIMENTO DETECTADO...','ready');
-
-          if(qualifyingFrames>=neededFrames){
-            armed=false;
-            qualifyingFrames=0;
-            lostSince=null;
-            await registerDetectedPoint()
-          }
-        }else{
+          armed=false;
           qualifyingFrames=0;
+          lostSince=null;
+          await registerDetectedPoint()
+        }else{
           setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready')
         }
       }else{
-        // Depois do ponto, só libera quando a imagem realmente voltar
-        // a ficar parecida com o fundo original por um pequeno período.
+        // Depois de pontuar, só rearma quando a cena voltar a ficar estável.
         if(percent<=stableLimit){
           if(lostSince===null)lostSince=now;
 
+          const rearmMs=Number(rearm.value)*100;
           if(now-lostSince>=rearmMs){
             armed=true;
             lostSince=null;
             qualifyingFrames=0;
 
-            // Pequeno ajuste do fundo após o objeto sair.
-            const fresh=captureGrayFrame();
-            backgroundFrame=Float32Array.from(fresh);
+            // O novo fundo passa a ser o quadro atual estável.
+            backgroundFrame=Float32Array.from(current);
 
             setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready')
           }else{
@@ -990,7 +986,7 @@
       motionLoopBusy=false
     }
 
-    setTimeout(detectionLoop,55)
+    setTimeout(detectionLoop,45)
   }
 
   async function startCamera(){
