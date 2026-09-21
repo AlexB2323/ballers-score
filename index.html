@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>Ballers Score - Tela Inteira</title>
+  <style>
+    :root{
+      --bg:#0b1020; --panel:#141b2d; --panel2:#1b2438; --text:#f8fafc;
+      --muted:#a7b0c0; --accent:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+      --line:#334155;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      background:var(--bg); color:var(--text); min-height:100vh;
+    }
+    .app{max-width:760px;margin:0 auto;padding:16px 14px 40px}
+    h1{font-size:1.35rem;margin:4px 0 12px}
+    .score-card{
+      display:grid;grid-template-columns:1fr auto;align-items:center;gap:14px;
+      background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;
+      margin-bottom:12px;
+    }
+    .score-label{color:var(--muted);font-size:.9rem}
+    #score{font-size:4.2rem;line-height:1;font-weight:900;letter-spacing:-.06em}
+    .status{
+      padding:10px 12px;border-radius:12px;font-weight:700;background:var(--panel2);
+      border:1px solid var(--line);min-width:155px;text-align:center;
+    }
+    .status.ready{color:#86efac}.status.hit{color:#fde68a}.status.wait{color:#cbd5e1}
+    .camera{
+      position:relative;background:#000;border-radius:18px;overflow:hidden;
+      border:1px solid var(--line);aspect-ratio:3/4;
+    }
+    video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    canvas{pointer-events:none}
+    .banner{
+      position:absolute;left:50%;top:11%;transform:translateX(-50%);
+      z-index:3;background:rgba(0,0,0,.62);padding:6px 10px;border-radius:999px;
+      font-size:.78rem;font-weight:700;white-space:nowrap
+    }
+    .controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
+    button{
+      appearance:none;border:0;border-radius:13px;padding:13px 10px;font-weight:800;
+      font-size:.95rem;background:#e2e8f0;color:#0f172a;min-height:48px
+    }
+    button.primary{background:var(--accent);color:#052e16}
+    button.danger{background:#fee2e2;color:#7f1d1d}
+    button:disabled{opacity:.45}
+    .settings{
+      margin-top:12px;background:var(--panel);border:1px solid var(--line);
+      border-radius:16px;padding:14px;
+    }
+    .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:10px 0}
+    .row label{font-size:.9rem;color:var(--muted)}
+    .row input[type="range"]{width:160px}
+    .hint{font-size:.86rem;color:var(--muted);line-height:1.45;margin:12px 2px 0}
+    .error{color:#fecaca;background:#450a0a;border:1px solid #7f1d1d;border-radius:12px;padding:10px;margin-top:12px;display:none}
+    .pulse{animation:pulse .28s ease-out}
+    @keyframes pulse{0%{transform:scale(1)}50%{transform:scale(1.08)}100%{transform:scale(1)}}
+    @media (min-width:650px){.camera{aspect-ratio:16/10}.app{padding-top:24px}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>🏀 Ballers Score - Tela Inteira</h1>
+
+    <section class="score-card">
+      <div>
+        <div class="score-label">CESTAS</div>
+        <div id="score">0</div>
+      </div>
+      <div id="status" class="status wait">TOQUE EM INICIAR</div>
+    </section>
+
+    <section class="camera">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div class="banner">A BOLA PODE APARECER EM QUALQUER LUGAR DA TELA</div>
+    </section>
+
+    <div class="controls">
+      <button id="startBtn" class="primary">▶ Iniciar câmera</button>
+      <button id="minusBtn">−1</button>
+      <button id="resetBtn" class="danger">Zerar</button>
+    </div>
+
+    <section class="settings">
+      <div class="row">
+        <label for="conf">Confiança mínima: <strong id="confValue">30%</strong></label>
+        <input id="conf" type="range" min="10" max="90" value="30" step="5">
+      </div>
+      <div class="row">
+        <label for="size">Tamanho mínimo da bola: <strong id="sizeValue">1.5%</strong></label>
+        <input id="size" type="range" min="5" max="120" value="15" step="5">
+      </div>
+      <div class="row">
+        <label for="rearm">Tempo para liberar próximo ponto: <strong id="rearmValue">0.8 s</strong></label>
+        <input id="rearm" type="range" min="3" max="25" value="8" step="1">
+      </div>
+      <div class="row">
+        <label for="frames">Frames seguidos para validar: <strong id="framesValue">3</strong></label>
+        <input id="frames" type="range" min="1" max="8" value="3" step="1">
+      </div>
+    </section>
+
+    <p class="hint">
+      Nesta versão a bola pode aparecer em <strong>qualquer parte da câmera</strong>.
+      O sistema soma <strong>+1</strong> quando detecta uma <strong>sports ball</strong>
+      grande o suficiente por alguns frames seguidos, apita e depois espera a bola sumir
+      pelo tempo configurado antes de permitir outro ponto.
+    </p>
+
+    <div id="error" class="error"></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script>
+    (() => {
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('overlay');
+      const ctx = canvas.getContext('2d');
+      const scoreEl = document.getElementById('score');
+      const statusEl = document.getElementById('status');
+      const startBtn = document.getElementById('startBtn');
+      const minusBtn = document.getElementById('minusBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const errorEl = document.getElementById('error');
+      const conf = document.getElementById('conf');
+      const size = document.getElementById('size');
+      const rearm = document.getElementById('rearm');
+      const frames = document.getElementById('frames');
+      const confValue = document.getElementById('confValue');
+      const sizeValue = document.getElementById('sizeValue');
+      const rearmValue = document.getElementById('rearmValue');
+      const framesValue = document.getElementById('framesValue');
+
+      let model = null;
+      let score = 0;
+      let running = false;
+      let armed = true;
+      let lostSince = null;
+      let qualifyingFrames = 0;
+      let audioCtx = null;
+      let wakeLock = null;
+
+      function setStatus(text, cls='wait'){
+        statusEl.textContent = text;
+        statusEl.className = 'status ' + cls;
+      }
+
+      function showError(msg){
+        errorEl.style.display = 'block';
+        errorEl.textContent = msg;
+      }
+
+      function updateScore(delta){
+        score = Math.max(0, score + delta);
+        scoreEl.textContent = score;
+        scoreEl.classList.remove('pulse');
+        void scoreEl.offsetWidth;
+        scoreEl.classList.add('pulse');
+      }
+
+      function beep(){
+        try{
+          if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.35, audioCtx.currentTime + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.16);
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.start(); osc.stop(audioCtx.currentTime + 0.18);
+        }catch(e){}
+      }
+
+      function draw(predictions){
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        const minConf = Number(conf.value)/100;
+        const minAreaRatio = Number(size.value)/1000;
+        const frameArea = canvas.width * canvas.height;
+
+        let best = null;
+        for(const p of predictions){
+          if(p.class !== 'sports ball' || p.score < minConf) continue;
+          if(!best || p.score > best.score) best = p;
+        }
+
+        let qualifies = false;
+
+        if(best){
+          const [x,y,w,h] = best.bbox;
+          const areaRatio = (w*h) / frameArea;
+          qualifies = areaRatio >= minAreaRatio;
+
+          ctx.save();
+          ctx.strokeStyle = qualifies ? '#22c55e' : '#f59e0b';
+          ctx.fillStyle = qualifies ? '#22c55e' : '#f59e0b';
+          ctx.lineWidth = Math.max(4, canvas.width/180);
+          ctx.strokeRect(x,y,w,h);
+          ctx.font = `bold ${Math.max(18, canvas.width/32)}px system-ui`;
+          ctx.fillText(`sports ball ${Math.round(best.score*100)}%`, x, Math.max(28,y-8));
+          ctx.fillText(`tam ${Math.round(areaRatio*1000)/10}%`, x, Math.min(canvas.height-12,y+h+24));
+          ctx.restore();
+        }
+
+        return {qualifies};
+      }
+
+      async function detectionLoop(){
+        if(!running) return;
+        try{
+          const predictions = await model.detect(video);
+          const {qualifies} = draw(predictions);
+          const now = performance.now();
+          const rearmMs = Number(rearm.value) * 100;
+          const neededFrames = Number(frames.value);
+
+          if(qualifies){
+            lostSince = null;
+            qualifyingFrames++;
+            if(armed && qualifyingFrames >= neededFrames){
+              armed = false;
+              updateScore(1);
+              beep();
+              setStatus('✅ +1! RETIRE A BOLA','hit');
+              if(navigator.vibrate) navigator.vibrate(80);
+            }else if(!armed){
+              setStatus('RETIRE A BOLA','hit');
+            }else{
+              setStatus('DETECTANDO...','ready');
+            }
+          }else{
+            qualifyingFrames = 0;
+            if(!armed){
+              if(lostSince === null) lostSince = now;
+              const remaining = rearmMs - (now - lostSince);
+              if(remaining <= 0){
+                armed = true;
+                lostSince = null;
+                setStatus('PRONTO','ready');
+              }else{
+                setStatus('AGUARDE...','wait');
+              }
+            }else{
+              setStatus('PRONTO','ready');
+            }
+          }
+        }catch(err){
+          console.error(err);
+        }
+        setTimeout(detectionLoop, 120);
+      }
+
+      async function start(){
+        if(running) return;
+        errorEl.style.display = 'none';
+        startBtn.disabled = true;
+        startBtn.textContent = 'Carregando...';
+        try{
+          if(!navigator.mediaDevices?.getUserMedia){
+            throw new Error('Este navegador não liberou acesso à câmera. Abra em HTTPS no Chrome.');
+          }
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video:{
+              facingMode:{ideal:'environment'},
+              width:{ideal:1280},
+              height:{ideal:720}
+            },
+            audio:false
+          });
+
+          video.srcObject = stream;
+          await video.play();
+
+          await new Promise(resolve => {
+            if(video.readyState >= 2) resolve();
+            else video.onloadedmetadata = resolve;
+          });
+
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+
+          setStatus('CARREGANDO MODELO...','wait');
+          await tf.ready();
+
+          // Modelo mais forte do que a versão "lite":
+          model = await cocoSsd.load({base:'mobilenet_v2'});
+
+          if('wakeLock' in navigator){
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+          }
+
+          running = true;
+          armed = true;
+          setStatus('PRONTO','ready');
+          startBtn.textContent = 'Câmera ativa';
+          detectionLoop();
+        }catch(err){
+          startBtn.disabled = false;
+          startBtn.textContent = '▶ Iniciar câmera';
+          showError(err.message || String(err));
+          setStatus('ERRO','wait');
+        }
+      }
+
+      startBtn.addEventListener('click', async () => {
+        try{
+          if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          if(audioCtx.state === 'suspended') await audioCtx.resume();
+        }catch(e){}
+        start();
+      });
+
+      minusBtn.addEventListener('click', () => updateScore(-1));
+      resetBtn.addEventListener('click', () => {
+        score = 0;
+        scoreEl.textContent = '0';
+        armed = true;
+        lostSince = null;
+        qualifyingFrames = 0;
+        setStatus(running ? 'PRONTO' : 'TOQUE EM INICIAR', running ? 'ready' : 'wait');
+      });
+
+      conf.addEventListener('input', () => confValue.textContent = conf.value + '%');
+      size.addEventListener('input', () => sizeValue.textContent = (Number(size.value)/10).toFixed(1) + '%');
+      rearm.addEventListener('input', () => rearmValue.textContent = (Number(rearm.value)/10).toFixed(1) + ' s');
+      frames.addEventListener('input', () => framesValue.textContent = frames.value);
+
+      document.addEventListener('visibilitychange', async () => {
+        if(document.visibilityState === 'visible' && running && 'wakeLock' in navigator){
+          try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
