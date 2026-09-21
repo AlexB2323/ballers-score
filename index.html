@@ -64,16 +64,6 @@
 <main class="app">
   <h1>🏀 Ballers Score <span class="badge">SYNC PERSISTENTE</span></h1>
 
-  <section class="scores">
-    <div id="cardA" class="team team-a active">
-      <div class="team-name">TIME A</div><div id="scoreA" class="team-score">0</div>
-      <div class="mini-controls"><button id="plusA">+1</button><button id="minusA">−1</button></div>
-    </div>
-    <div id="cardB" class="team team-b">
-      <div class="team-name">TIME B</div><div id="scoreB" class="team-score">0</div>
-      <div class="mini-controls"><button id="plusB">+1</button><button id="minusB">−1</button></div>
-    </div>
-  </section>
 
   <section class="panel">
     <h2>📱 Este aparelho</h2>
@@ -119,6 +109,7 @@
     <div id="audioInfo" class="audio-info">
       Os MP3s ficam salvos neste aparelho. No modo sincronizado, também são enviados para a sala e baixados/salvos nos outros aparelhos.
     </div>
+    <div id="audioReady" class="audio-info">🔊 Áudio: aguardando biblioteca.</div>
     <ul id="audioListView" class="audio-list"></ul>
     <div class="audio-actions">
       <button id="testAudioBtn">▶ Testar aleatório</button>
@@ -135,6 +126,17 @@
     <div class="banner">MOSTRE A BOLA EM QUALQUER PARTE DA CÂMERA</div>
   </section>
 
+  <section class="scores">
+    <div id="cardA" class="team team-a active">
+      <div class="team-name">TIME A</div><div id="scoreA" class="team-score">0</div>
+      <div class="mini-controls"><button id="plusA">+1</button><button id="minusA">−1</button></div>
+    </div>
+    <div id="cardB" class="team team-b">
+      <div class="team-name">TIME B</div><div id="scoreB" class="team-score">0</div>
+      <div class="mini-controls"><button id="plusB">+1</button><button id="minusB">−1</button></div>
+    </div>
+  </section>
+
   <div id="status" class="status wait">TOQUE EM INICIAR</div>
   <div class="controls">
     <button id="startBtn" class="primary">▶ Iniciar câmera</button>
@@ -143,16 +145,16 @@
 
   <section class="panel settings">
     <h2>⚙️ Detecção</h2>
-    <div class="row"><label for="conf">Confiança mínima: <strong id="confValue">30%</strong></label><input id="conf" type="range" min="10" max="90" value="30" step="5"></div>
-    <div class="row"><label for="size">Tamanho mínimo da bola: <strong id="sizeValue">1.5%</strong></label><input id="size" type="range" min="5" max="120" value="15" step="5"></div>
-    <div class="row"><label for="rearm">Tempo para liberar: <strong id="rearmValue">0.8 s</strong></label><input id="rearm" type="range" min="3" max="25" value="8" step="1"></div>
-    <div class="row"><label for="frames">Frames seguidos: <strong id="framesValue">3</strong></label><input id="frames" type="range" min="1" max="8" value="3" step="1"></div>
+    <div class="row"><label for="conf">Confiança mínima: <strong id="confValue">10%</strong></label><input id="conf" type="range" min="10" max="90" value="10" step="5"></div>
+    <div class="row"><label for="size">Tamanho mínimo da bola: <strong id="sizeValue">0.5%</strong></label><input id="size" type="range" min="5" max="120" value="5" step="5"></div>
+    <div class="row"><label for="rearm">Tempo para liberar: <strong id="rearmValue">0.3 s</strong></label><input id="rearm" type="range" min="3" max="25" value="3" step="1"></div>
+    <div class="row"><label for="frames">Frames seguidos: <strong id="framesValue">1</strong></label><input id="frames" type="range" min="1" max="8" value="1" step="1"></div>
   </section>
 
   <p class="hint">
     Para PC e celular compartilharem áudios, ambos precisam estar no <strong>modo sincronizado</strong>,
     usando a <strong>mesma URL do Firebase</strong> e a <strong>mesma sala</strong>.
-    A escolha Time A/Time B continua independente em cada aparelho.
+    A escolha Time A/Time B continua independente em cada aparelho. O áudio agora é pré-carregado pelo Web Audio e toca imediatamente quando a bola gera +1.
   </p>
 
   <div id="error" class="error"></div>
@@ -171,7 +173,7 @@
   const dbUrl=$('dbUrl'),room=$('room'),syncEvery=$('syncEvery');
   const connectBtn=$('connectBtn'),syncNowBtn=$('syncNowBtn'),copyLinkBtn=$('copyLinkBtn'),resetCloudBtn=$('resetCloudBtn');
   const cloudStatus=$('cloudStatus'),errorEl=$('error');
-  const audioFiles=$('audioFiles'),audioInfo=$('audioInfo'),audioListView=$('audioListView'),testAudioBtn=$('testAudioBtn'),clearAudioBtn=$('clearAudioBtn');
+  const audioFiles=$('audioFiles'),audioInfo=$('audioInfo'),audioReady=$('audioReady'),audioListView=$('audioListView'),testAudioBtn=$('testAudioBtn'),clearAudioBtn=$('clearAudioBtn');
   const conf=$('conf'),size=$('size'),rearm=$('rearm'),frames=$('frames');
   const confValue=$('confValue'),sizeValue=$('sizeValue'),rearmValue=$('rearmValue'),framesValue=$('framesValue');
 
@@ -181,7 +183,7 @@
 
   let model=null,running=false,armed=true,lostSince=null,qualifyingFrames=0,wakeLock=null;
   let localScores={A:0,B:0},cloudConnected=false,pollTimer=null,settingsTimer=null;
-  let audioList=[],audioCtx=null,currentAudio=null,lastAudioIndex=-1,lastCloudAudioVersion=0;
+  let audioList=[],audioCtx=null,currentAudio=null,currentAudioSource=null,lastAudioIndex=-1,lastCloudAudioVersion=0,audioBuffers=new Map(),audioPreloadToken=0;
 
   function selectedTeam(){return deviceTeam.value==='B'?'B':'A'}
   function clampScore(v){v=Number(v);return Number.isFinite(v)?Math.max(0,Math.floor(v)):0}
@@ -215,6 +217,15 @@
     rearmValue.textContent=(Number(rearm.value)/10).toFixed(1)+' s';
     framesValue.textContent=frames.value
   }
+
+  function forceMinimumDetection(){
+    conf.value=conf.min;
+    size.value=size.min;
+    rearm.value=rearm.min;
+    frames.value=frames.min;
+    updateSettingLabels()
+  }
+
   function currentSettings(){return{conf:Number(conf.value),size:Number(size.value),rearm:Number(rearm.value),frames:Number(frames.value)}}
   function applySettings(s){
     if(!s)return;
@@ -298,13 +309,75 @@
     if(!r.ok)throw new Error('Firebase respondeu '+r.status)
   }
 
+
+  async function ensureAudioContext(){
+    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended'){
+      try{await audioCtx.resume()}catch(e){}
+    }
+    return audioCtx
+  }
+
+  function dataUrlToArrayBuffer(dataUrl){
+    const comma=dataUrl.indexOf(',');
+    if(comma<0)throw new Error('Áudio inválido');
+    const meta=dataUrl.slice(0,comma);
+    const body=dataUrl.slice(comma+1);
+    if(/;base64/i.test(meta)){
+      const bin=atob(body);
+      const bytes=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+      return bytes.buffer
+    }
+    const text=decodeURIComponent(body);
+    return new TextEncoder().encode(text).buffer
+  }
+
+  async function decodeAudioItem(item){
+    if(audioBuffers.has(item.id))return audioBuffers.get(item.id);
+    const ac=await ensureAudioContext();
+    const raw=dataUrlToArrayBuffer(item.dataUrl);
+    const buffer=await ac.decodeAudioData(raw.slice(0));
+    audioBuffers.set(item.id,buffer);
+    return buffer
+  }
+
+  async function preloadAudioBuffers(){
+    const token=++audioPreloadToken;
+    audioBuffers.clear();
+
+    if(!audioList.length){
+      audioReady.textContent='🔊 Áudio: nenhum MP3 carregado; será usado um bip.';
+      return
+    }
+
+    audioReady.textContent='🔊 Áudio: preparando '+audioList.length+' arquivo(s)...';
+    let ok=0;
+
+    for(const item of audioList){
+      if(token!==audioPreloadToken)return;
+      try{
+        await decodeAudioItem(item);
+        ok++
+      }catch(e){
+        console.warn('Falha ao preparar',item.name,e)
+      }
+    }
+
+    if(token!==audioPreloadToken)return;
+    audioReady.textContent=ok===audioList.length
+      ?'🔊 Áudio pronto: '+ok+'/'+audioList.length+' MP3(s).'
+      :'🔊 Áudio pronto parcialmente: '+ok+'/'+audioList.length+' MP3(s).'
+  }
+
   async function loadAudioScope(scope){
     const rows=await idbAll(scope);
     audioList=rows.map(r=>({
       id:r.id,name:r.name,size:r.size||0,dataUrl:r.dataUrl,
       scope:r.scope,cloud:r.scope!=='local'
     }));
-    renderAudioList()
+    renderAudioList();
+    preloadAudioBuffers().catch(e=>console.warn('Falha no preload de áudio',e))
   }
 
   function renderAudioList(){
@@ -414,7 +487,7 @@
     if(!state)return;
     const s=state.scores||{};
     renderScores(s.A||0,s.B||0);
-    applySettings(state.settings);
+    forceMinimumDetection();
     const v=Number(state.audiosVersion)||0;
     if(v&&v!==lastCloudAudioVersion){
       lastCloudAudioVersion=v;
@@ -455,6 +528,8 @@
 
       await ensureRoom();
       cloudConnected=true;
+      forceMinimumDetection();
+      await firebasePut('state/settings',currentSettings());
 
       const migrated=await migrateLocalAudiosToCloud();
       await syncCloudAudiosToDevice();
@@ -551,33 +626,79 @@
     }catch(e){showError('Erro ao limpar áudios: '+e.message)}
   }
 
-  function basicBeep(){
+  async function basicBeep(){
     try{
-      if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
+      const ac=await ensureAudioContext();
+      const osc=ac.createOscillator(),gain=ac.createGain();
       osc.frequency.value=880;
-      gain.gain.setValueAtTime(.0001,audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(.3,audioCtx.currentTime+.01);
-      gain.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+.18);
-      osc.connect(gain);gain.connect(audioCtx.destination);osc.start();osc.stop(audioCtx.currentTime+.2)
+      gain.gain.setValueAtTime(.0001,ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(.32,ac.currentTime+.01);
+      gain.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+.2);
+      osc.connect(gain);gain.connect(ac.destination);
+      osc.start();osc.stop(ac.currentTime+.22)
     }catch(e){}
   }
 
-  function playRandomCelebration(){
-    if(!audioList.length){basicBeep();return}
+  async function playRandomCelebration(){
+    if(!audioList.length){
+      await basicBeep();
+      return
+    }
+
+    let index=Math.floor(Math.random()*audioList.length);
+    if(audioList.length>1&&index===lastAudioIndex){
+      index=(index+1+Math.floor(Math.random()*(audioList.length-1)))%audioList.length
+    }
+    lastAudioIndex=index;
+    const item=audioList[index];
+
     try{
-      if(currentAudio){currentAudio.pause();currentAudio.currentTime=0}
-      let index=Math.floor(Math.random()*audioList.length);
-      if(audioList.length>1&&index===lastAudioIndex)index=(index+1)%audioList.length;
-      lastAudioIndex=index;
-      currentAudio=new Audio(audioList[index].dataUrl);
-      currentAudio.volume=1;
-      currentAudio.play().catch(()=>basicBeep())
-    }catch(e){basicBeep()}
+      const ac=await ensureAudioContext();
+
+      if(currentAudioSource){
+        try{currentAudioSource.stop()}catch(e){}
+        currentAudioSource=null
+      }
+      if(currentAudio){
+        try{currentAudio.pause();currentAudio.currentTime=0}catch(e){}
+        currentAudio=null
+      }
+
+      let buffer=audioBuffers.get(item.id);
+      if(!buffer)buffer=await decodeAudioItem(item);
+
+      const source=ac.createBufferSource();
+      source.buffer=buffer;
+      source.connect(ac.destination);
+      source.onended=()=>{if(currentAudioSource===source)currentAudioSource=null};
+      currentAudioSource=source;
+      source.start(0);
+
+      audioReady.textContent='🔊 Tocando: '+item.name;
+      setTimeout(()=>{
+        if(audioList.length)audioReady.textContent='🔊 Áudio pronto: '+audioBuffers.size+'/'+audioList.length+' MP3(s).'
+      },900)
+    }catch(e){
+      console.warn('WebAudio falhou, tentando player normal:',e);
+      try{
+        currentAudio=new Audio(item.dataUrl);
+        currentAudio.volume=1;
+        await currentAudio.play();
+        audioReady.textContent='🔊 Tocando: '+item.name
+      }catch(e2){
+        console.warn('Player normal também falhou:',e2);
+        audioReady.textContent='⚠️ MP3 bloqueado pelo navegador; usando bip.';
+        await basicBeep()
+      }
+    }
   }
 
   async function changeScore(team,delta,playSound=false){
     team=team==='B'?'B':'A';
+
+    // Toca imediatamente ao detectar/adicionar o ponto. Não espera o Firebase.
+    if(delta>0&&playSound)playRandomCelebration();
+
     if(mode.value==='cloud'){
       if(!cloudConnected){showError('Conecte a sala primeiro.');return false}
       try{
@@ -589,14 +710,14 @@
           team==='A'?next:scoreA.textContent,
           team==='B'?next:scoreB.textContent
         );
-        if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}
+        if(delta>0){pulseTeam(team)}
         return true
       }catch(e){showError('Erro ao alterar placar: '+e.message);return false}
     }else{
       localScores[team]=clampScore(localScores[team]+delta);
       localStorage.setItem('ballers_localScores',JSON.stringify(localScores));
       renderScores(localScores.A,localScores.B);
-      if(delta>0){pulseTeam(team);if(playSound)playRandomCelebration()}
+      if(delta>0){pulseTeam(team)}
       return true
     }
   }
@@ -700,11 +821,6 @@
       const s=JSON.parse(localStorage.getItem('ballers_localScores')||'null');
       if(s)localScores={A:clampScore(s.A),B:clampScore(s.B)}
     }catch(e){}
-    try{
-      const s=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
-      if(s)applySettings(s)
-    }catch(e){}
-
     deviceTeam.value=localStorage.getItem('ballers_deviceTeam')||'A';
     mode.value=localStorage.getItem('ballers_mode')||'local';
     dbUrl.value=localStorage.getItem('ballers_dbUrl')||'';
@@ -718,7 +834,7 @@
     }catch(e){}
 
     cloudPanel.style.display=mode.value==='cloud'?'block':'none';
-    highlightDevice();updateSettingLabels();
+    highlightDevice();forceMinimumDetection();
 
     if(mode.value==='cloud'&&normalizedDb().startsWith('https://')){
       await loadAudioScope(cloudScope());
@@ -731,8 +847,13 @@
 
   startBtn.addEventListener('click',async()=>{
     try{
-      if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-      if(audioCtx.state==='suspended')await audioCtx.resume()
+      await ensureAudioContext();
+      // Pequeno som silencioso para desbloquear reprodução no navegador móvel.
+      const ac=audioCtx;
+      const b=ac.createBuffer(1,1,22050);
+      const s=ac.createBufferSource();
+      const g=ac.createGain();g.gain.value=0;
+      s.buffer=b;s.connect(g);g.connect(ac.destination);s.start(0);
     }catch(e){}
     startCamera()
   });
@@ -792,7 +913,7 @@
   });
 
   audioFiles.addEventListener('change',()=>addFiles(audioFiles.files));
-  testAudioBtn.addEventListener('click',playRandomCelebration);
+  testAudioBtn.addEventListener('click',async()=>{await ensureAudioContext();await playRandomCelebration()});
   clearAudioBtn.addEventListener('click',clearAudios);
   [conf,size,rearm,frames].forEach(el=>el.addEventListener('input',scheduleSettingsSave));
 
