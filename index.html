@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b1020">
-  <title>Ballers Score - Modelo TOP DETR</title>
+  <title>Ballers Score - Sensor de Movimento</title>
   <style>
     :root{
       --bg:#0b1020;--panel:#141b2d;--panel2:#1b2438;--text:#f8fafc;
@@ -62,7 +62,7 @@
 </head>
 <body>
 <main class="app">
-  <h1>🏀 Ballers Score <span class="badge">SYNC PERSISTENTE</span></h1>
+  <h1>🏀 Ballers Score <span class="badge">MOVIMENTO</span></h1>
 
 
   <section class="panel">
@@ -123,12 +123,8 @@
 
   <section class="camera">
     <video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas>
-    <div class="banner">MOSTRE A BOLA EM QUALQUER PARTE DA CÂMERA</div>
+    <div class="banner">MOSTRE A BOLA/MÃO EM QUALQUER PARTE DA CÂMERA</div>
   </section>
-  <div id="modelStatus" class="status wait" style="margin-top:8px">
-    🧠 IA: aguardando câmera
-  </div>
-
 
   <section class="scores">
     <div id="cardA" class="team team-a active">
@@ -144,54 +140,93 @@
   <div id="status" class="status wait">TOQUE EM INICIAR</div>
   <div class="controls">
     <button id="startBtn" class="primary">▶ Iniciar câmera</button>
-    <button id="manualPointBtn">🏀 +1 para este aparelho</button>
+    <button id="manualPointBtn">➕ +1 para este aparelho</button>
   </div>
 
   <section class="panel settings">
-    <h2>⚙️ Detecção</h2>
-    <div class="row"><label for="conf">Confiança mínima: <strong id="confValue">10%</strong></label><input id="conf" type="range" min="10" max="90" value="10" step="5"></div>
-    <div class="row"><label for="size">Tamanho mínimo da bola: <strong id="sizeValue">0.5%</strong></label><input id="size" type="range" min="5" max="120" value="5" step="5"></div>
-    <div class="row"><label for="rearm">Tempo para liberar: <strong id="rearmValue">0.3 s</strong></label><input id="rearm" type="range" min="3" max="25" value="3" step="1"></div>
-    <div class="row"><label for="frames">Frames seguidos: <strong id="framesValue">1</strong></label><input id="frames" type="range" min="1" max="8" value="1" step="1"></div>
+    <h2>⚙️ Sensor de movimento</h2>
+
+    <div class="row">
+      <label for="conf">
+        Sensibilidade do pixel: <strong id="confValue">12</strong>
+        <span class="small">(menor = mais sensível)</span>
+      </label>
+      <input id="conf" type="range" min="8" max="60" value="12" step="2">
+    </div>
+
+    <div class="row">
+      <label for="size">
+        Movimento mínimo na tela: <strong id="sizeValue">1.5%</strong>
+      </label>
+      <input id="size" type="range" min="5" max="200" value="15" step="5">
+    </div>
+
+    <div class="row">
+      <label for="rearm">
+        Tempo parado para liberar novo ponto: <strong id="rearmValue">0.5 s</strong>
+      </label>
+      <input id="rearm" type="range" min="5" max="30" value="5" step="1">
+    </div>
+
+    <div class="row">
+      <label for="frames">
+        Frames de movimento para confirmar: <strong id="framesValue">1</strong>
+      </label>
+      <input id="frames" type="range" min="1" max="5" value="1" step="1">
+    </div>
+
+    <div class="audio-actions">
+      <button id="calibrateBtn">🎯 Recalibrar fundo</button>
+      <button id="superSensitiveBtn">⚡ Modo super sensível</button>
+    </div>
+
+    <div id="motionMeter" class="audio-info">
+      Movimento detectado: 0.0%
+    </div>
+
+    <p class="small">
+      Ao iniciar a câmera, deixe a imagem sem ninguém na frente por cerca de 1 segundo.
+      Depois, qualquer objeto grande o suficiente que entrar ou se mover na imagem pode registrar o ponto.
+    </p>
   </section>
 
   <p class="hint">
     Para PC e celular compartilharem áudios, ambos precisam estar no <strong>modo sincronizado</strong>,
     usando a <strong>mesma URL do Firebase</strong> e a <strong>mesma sala</strong>.
-    A escolha Time A/Time B continua independente em cada aparelho. A detecção usa três camadas: DETR ResNet-50 (IA TOP), detector rápido COCO e assistência visual específica para basquete, com memória curta para aguentar braço/mão cobrindo parte da bola.
+    A escolha Time A/Time B continua independente em cada aparelho. Nesta versão não existe reconhecimento de bola: a câmera funciona como um sensor de movimento. Movimento significativo → +1 → áudio aleatório → espera a cena voltar ao normal para liberar o próximo ponto.
   </p>
 
   <div id="error" class="error"></div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <script>
 (() => {
   const $=id=>document.getElementById(id);
   const video=$('video'),canvas=$('overlay'),ctx=canvas.getContext('2d');
   const scoreA=$('scoreA'),scoreB=$('scoreB'),cardA=$('cardA'),cardB=$('cardB');
-  const statusEl=$('status'),modelStatus=$('modelStatus'),startBtn=$('startBtn'),manualPointBtn=$('manualPointBtn');
+  const statusEl=$('status'),startBtn=$('startBtn'),manualPointBtn=$('manualPointBtn');
   const plusA=$('plusA'),minusA=$('minusA'),plusB=$('plusB'),minusB=$('minusB');
   const deviceTeam=$('deviceTeam'),mode=$('mode'),cloudPanel=$('cloudPanel');
   const dbUrl=$('dbUrl'),room=$('room'),syncEvery=$('syncEvery');
   const connectBtn=$('connectBtn'),syncNowBtn=$('syncNowBtn'),copyLinkBtn=$('copyLinkBtn'),resetCloudBtn=$('resetCloudBtn');
   const cloudStatus=$('cloudStatus'),errorEl=$('error');
   const audioFiles=$('audioFiles'),audioInfo=$('audioInfo'),audioReady=$('audioReady'),audioListView=$('audioListView'),testAudioBtn=$('testAudioBtn'),clearAudioBtn=$('clearAudioBtn');
-  const conf=$('conf'),size=$('size'),rearm=$('rearm'),frames=$('frames');
+  const conf=$('conf'),size=$('size'),rearm=$('rearm'),frames=$('frames'),calibrateBtn=$('calibrateBtn'),superSensitiveBtn=$('superSensitiveBtn'),motionMeter=$('motionMeter');
   const confValue=$('confValue'),sizeValue=$('sizeValue'),rearmValue=$('rearmValue'),framesValue=$('framesValue');
 
   const DB_NAME='ballers_score_persistent_v3';
   const STORE='audios';
   const MAX_FILE=2.5*1024*1024, MAX_TOTAL=12*1024*1024;
 
-  let model=null,running=false,armed=true,lostSince=null,qualifyingFrames=0,wakeLock=null;
-  let topDetector=null,topModelReady=false,topModelLoading=false,topBusy=false;
-  let topLastSeen=0,fastLastSeen=0,assistLastSeen=0;
-  let topBox=null,fastBox=null,assistBox=null,assistConsecutive=0;
-  const topFrameCanvas=document.createElement('canvas'),topFrameCtx=topFrameCanvas.getContext('2d',{willReadFrequently:false});
-  const assistCanvas=document.createElement('canvas'),assistCtx=assistCanvas.getContext('2d',{willReadFrequently:true});
-  let topLoopTimer=null;
+  let running=false,armed=true,lostSince=null,qualifyingFrames=0,wakeLock=null;
+  const motionCanvas=document.createElement('canvas');
+  const motionCtx=motionCanvas.getContext('2d',{willReadFrequently:true});
+  let backgroundFrame=null;
+  let calibrating=false;
+  let motionLoopBusy=false;
+  let motionFrameWidth=176;
+  let motionFrameHeight=132;
+  let lastMotionPercent=0;
   let localScores={A:0,B:0},cloudConnected=false,pollTimer=null,settingsTimer=null;
   let audioList=[],audioCtx=null,currentAudio=null,currentAudioSource=null,lastAudioIndex=-1,lastCloudAudioVersion=0,audioBuffers=new Map(),audioPreloadToken=0;
 
@@ -222,27 +257,37 @@
     manualPointBtn.textContent='🏀 +1 para Time '+selectedTeam()
   }
   function updateSettingLabels(){
-    confValue.textContent=conf.value+'%';
+    confValue.textContent=conf.value;
     sizeValue.textContent=(Number(size.value)/10).toFixed(1)+'%';
     rearmValue.textContent=(Number(rearm.value)/10).toFixed(1)+' s';
     framesValue.textContent=frames.value
   }
 
   function forceMinimumDetection(){
-    conf.value=conf.min;
-    size.value=size.min;
-    rearm.value=rearm.min;
-    frames.value=frames.min;
+    // Valores muito sensíveis, mas ainda com uma pequena proteção contra ruído da câmera.
+    conf.value=12;
+    size.value=15;
+    rearm.value=5;
+    frames.value=1;
     updateSettingLabels()
   }
 
-  function currentSettings(){return{conf:Number(conf.value),size:Number(size.value),rearm:Number(rearm.value),frames:Number(frames.value)}}
+  function currentSettings(){
+    return{
+      motionMode:1,
+      conf:Number(conf.value),
+      size:Number(size.value),
+      rearm:Number(rearm.value),
+      frames:Number(frames.value)
+    }
+  }
+
   function applySettings(s){
-    if(!s)return;
-    if(Number.isFinite(Number(s.conf)))conf.value=s.conf;
-    if(Number.isFinite(Number(s.size)))size.value=s.size;
-    if(Number.isFinite(Number(s.rearm)))rearm.value=s.rearm;
-    if(Number.isFinite(Number(s.frames)))frames.value=s.frames;
+    if(!s||Number(s.motionMode)!==1)return;
+    if(Number.isFinite(Number(s.conf)))conf.value=Math.max(Number(conf.min),Math.min(Number(conf.max),Number(s.conf)));
+    if(Number.isFinite(Number(s.size)))size.value=Math.max(Number(size.min),Math.min(Number(size.max),Number(s.size)));
+    if(Number.isFinite(Number(s.rearm)))rearm.value=Math.max(Number(rearm.min),Math.min(Number(rearm.max),Number(s.rearm)));
+    if(Number.isFinite(Number(s.frames)))frames.value=Math.max(Number(frames.min),Math.min(Number(frames.max),Number(s.frames)));
     updateSettingLabels()
   }
 
@@ -497,7 +542,7 @@
     if(!state)return;
     const s=state.scores||{};
     renderScores(s.A||0,s.B||0);
-    forceMinimumDetection();
+    if(state.settings&&Number(state.settings.motionMode)===1)applySettings(state.settings);
     const v=Number(state.audiosVersion)||0;
     if(v&&v!==lastCloudAudioVersion){
       lastCloudAudioVersion=v;
@@ -538,7 +583,6 @@
 
       await ensureRoom();
       cloudConnected=true;
-      forceMinimumDetection();
       await firebasePut('state/settings',currentSettings());
 
       const migrated=await migrateLocalAudiosToCloud();
@@ -748,352 +792,253 @@
     },350)
   }
 
-
-  function setModelStatus(text,kind='wait'){
-    modelStatus.textContent=text;
-    modelStatus.className='status '+kind
+  function setupMotionCanvas(){
+    const vw=video.videoWidth||640;
+    const vh=video.videoHeight||480;
+    motionFrameWidth=176;
+    motionFrameHeight=Math.max(96,Math.round(motionFrameWidth*vh/vw));
+    motionCanvas.width=motionFrameWidth;
+    motionCanvas.height=motionFrameHeight
   }
 
-  async function loadTopDetector(){
-    if(topModelReady||topModelLoading)return;
-    topModelLoading=true;
-    setModelStatus('🧠 IA TOP: carregando DETR ResNet-50 (~40 MB na primeira vez)...','wait');
+  function captureGrayFrame(){
+    motionCtx.drawImage(video,0,0,motionFrameWidth,motionFrameHeight);
+    const rgba=motionCtx.getImageData(0,0,motionFrameWidth,motionFrameHeight).data;
+    const gray=new Uint8Array(motionFrameWidth*motionFrameHeight);
 
-    try{
-      const mod=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm');
-      const {pipeline,env}=mod;
-      env.allowLocalModels=false;
-
-      let detector=null;
-      if('gpu' in navigator){
-        try{
-          setModelStatus('🧠 IA TOP: carregando DETR com aceleração WebGPU...','wait');
-          detector=await pipeline('object-detection','Xenova/detr-resnet-50',{
-            device:'webgpu',
-            dtype:'q8'
-          })
-        }catch(e){
-          console.warn('WebGPU não funcionou para o DETR; tentando CPU/WASM.',e)
-        }
-      }
-
-      if(!detector){
-        setModelStatus('🧠 IA TOP: carregando DETR otimizado para celular...','wait');
-        try{
-          detector=await pipeline('object-detection','Xenova/detr-resnet-50',{dtype:'q8'})
-        }catch(e){
-          console.warn('q8 falhou; tentando configuração padrão.',e);
-          detector=await pipeline('object-detection','Xenova/detr-resnet-50')
-        }
-      }
-
-      topDetector=detector;
-      topModelReady=true;
-      setModelStatus('✅ IA TOP ativa: DETR ResNet-50 + detector rápido + assistência de basquete','ready');
-      scheduleTopLoop(0)
-    }catch(e){
-      console.warn('Não foi possível carregar DETR:',e);
-      topDetector=null;
-      topModelReady=false;
-      setModelStatus('⚠️ DETR indisponível; usando detector rápido + assistência de basquete','hit')
-    }finally{
-      topModelLoading=false
+    // Luminância. Mais barato e mais estável do que comparar RGB completo.
+    for(let i=0,p=0;i<rgba.length;i+=4,p++){
+      gray[p]=(rgba[i]*77 + rgba[i+1]*150 + rgba[i+2]*29)>>8
     }
+    return gray
   }
 
-  function captureTopFrame(){
-    const vw=video.videoWidth||canvas.width, vh=video.videoHeight||canvas.height;
-    if(!vw||!vh)return null;
-
-    // Mantém detalhes suficientes para a bola sem deixar o modelo pesado demais.
-    const maxSide=640;
-    const scale=Math.min(1,maxSide/Math.max(vw,vh));
-    const w=Math.max(224,Math.round(vw*scale));
-    const h=Math.max(224,Math.round(vh*scale));
-
-    if(topFrameCanvas.width!==w||topFrameCanvas.height!==h){
-      topFrameCanvas.width=w;topFrameCanvas.height=h
-    }
-    topFrameCtx.drawImage(video,0,0,w,h);
-    return topFrameCanvas.toDataURL('image/jpeg',0.82)
-  }
-
-  function normalizeTopBox(box){
-    const sx=canvas.width/topFrameCanvas.width;
-    const sy=canvas.height/topFrameCanvas.height;
-    const x=Math.max(0,Number(box.xmin)||0)*sx;
-    const y=Math.max(0,Number(box.ymin)||0)*sy;
-    const xmax=Math.min(topFrameCanvas.width,Number(box.xmax)||0)*sx;
-    const ymax=Math.min(topFrameCanvas.height,Number(box.ymax)||0)*sy;
-    return [x,y,Math.max(1,xmax-x),Math.max(1,ymax-y)]
-  }
-
-  async function runTopDetection(){
-    if(!running||!topDetector||topBusy)return;
-    topBusy=true;
-    try{
-      const frame=captureTopFrame();
-      if(!frame)return;
-
-      // Limiar baixo de propósito: aqui queremos sensibilidade alta.
-      const out=await topDetector(frame,{threshold:0.08,percentage:false});
-      let best=null;
-      for(const p of out||[]){
-        const label=String(p.label||'').toLowerCase().trim();
-        if(label!=='sports ball'&&label!=='ball')continue;
-        if(!best||Number(p.score)>Number(best.score))best=p
-      }
-
-      if(best&&best.box){
-        topBox=normalizeTopBox(best.box);
-        topLastSeen=performance.now();
-        topBox.score=Number(best.score)||0
-      }
-    }catch(e){
-      console.warn('Erro na inferência DETR:',e)
-    }finally{
-      topBusy=false
-    }
-  }
-
-  function scheduleTopLoop(delay=80){
-    if(topLoopTimer)clearTimeout(topLoopTimer);
-    if(!running||!topModelReady)return;
-    topLoopTimer=setTimeout(async()=>{
-      await runTopDetection();
-      scheduleTopLoop(90)
-    },delay)
-  }
-
-  function rgbToHueSatVal(r,g,b){
-    r/=255;g/=255;b/=255;
-    const max=Math.max(r,g,b),min=Math.min(r,g,b),d=max-min;
-    let h=0;
-    if(d!==0){
-      if(max===r)h=60*(((g-b)/d)%6);
-      else if(max===g)h=60*((b-r)/d+2);
-      else h=60*((r-g)/d+4);
-    }
-    if(h<0)h+=360;
-    const s=max===0?0:d/max;
-    return [h,s,max]
-  }
-
-  function detectBasketballAssist(){
-    if(!video.videoWidth||!video.videoHeight)return null;
-
-    // Baixa resolução = resposta rápida, mesmo em celular.
-    const W=176,H=Math.max(96,Math.round(W*video.videoHeight/video.videoWidth));
-    if(assistCanvas.width!==W||assistCanvas.height!==H){
-      assistCanvas.width=W;assistCanvas.height=H
-    }
-    assistCtx.drawImage(video,0,0,W,H);
-
-    const img=assistCtx.getImageData(0,0,W,H);
-    const data=img.data;
-    const mask=new Uint8Array(W*H);
-
-    // Faixa ampla para laranja/marrom de bola sob luz clara ou amarelada.
-    for(let i=0,p=0;i<data.length;i+=4,p++){
-      const r=data[i],g=data[i+1],b=data[i+2];
-      const [h,s,v]=rgbToHueSatVal(r,g,b);
-      const orange=(h>=3&&h<=48&&s>=0.28&&v>=0.16&&r>=g*1.03&&g>=b*0.82);
-      if(orange)mask[p]=1
-    }
-
-    const seen=new Uint8Array(W*H);
-    const qx=new Int16Array(W*H),qy=new Int16Array(W*H);
-    let best=null;
-
-    for(let y=0;y<H;y++){
-      for(let x=0;x<W;x++){
-        const start=y*W+x;
-        if(!mask[start]||seen[start])continue;
-
-        let head=0,tail=0,area=0,minX=x,maxX=x,minY=y,maxY=y;
-        qx[tail]=x;qy[tail]=y;tail++;seen[start]=1;
-
-        while(head<tail){
-          const cx=qx[head],cy=qy[head];head++;area++;
-          if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
-
-          const neighbors=[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
-          for(const [nx,ny] of neighbors){
-            if(nx<0||ny<0||nx>=W||ny>=H)continue;
-            const ni=ny*W+nx;
-            if(mask[ni]&&!seen[ni]){
-              seen[ni]=1;qx[tail]=nx;qy[tail]=ny;tail++
-            }
-          }
-        }
-
-        const bw=maxX-minX+1,bh=maxY-minY+1;
-        if(area<13||bw<5||bh<5)continue;
-
-        const aspect=Math.min(bw,bh)/Math.max(bw,bh);
-        const fill=area/(bw*bh);
-        const areaRatio=(bw*bh)/(W*H);
-
-        // Procura algo razoavelmente redondo e com massa de cor suficiente.
-        if(aspect<0.48||fill<0.22||areaRatio<0.0012||areaRatio>0.48)continue;
-
-        const score=area*aspect*fill;
-        if(!best||score>best.score){
-          best={minX,minY,bw,bh,score,aspect,fill}
-        }
-      }
-    }
-
-    if(!best)return null;
-
-    const sx=canvas.width/W,sy=canvas.height/H;
-    return [
-      best.minX*sx,
-      best.minY*sy,
-      best.bw*sx,
-      best.bh*sy
-    ]
-  }
-
-  function drawBox(box,label,color){
-    if(!box)return;
-    const [x,y,w,h]=box;
-    ctx.save();
-    ctx.strokeStyle=color;ctx.fillStyle=color;
-    ctx.lineWidth=Math.max(4,canvas.width/180);
-    ctx.strokeRect(x,y,w,h);
-    ctx.font=`bold ${Math.max(18,canvas.width/34)}px system-ui`;
-    ctx.fillText(label,x,Math.max(28,y-8));
-    ctx.restore()
-  }
-
-  function draw(predictions){
+  function drawMotionOverlay(percent,triggered){
     ctx.clearRect(0,0,canvas.width,canvas.height);
 
-    const minConf=Number(conf.value)/100;
-    const minAreaRatio=Number(size.value)/1000;
-    const frameArea=canvas.width*canvas.height;
-    let best=null;
+    const threshold=Number(size.value)/10;
+    ctx.save();
+    ctx.lineWidth=Math.max(6,canvas.width/120);
+    ctx.strokeStyle=triggered?'#22c55e':'rgba(255,255,255,.28)';
+    ctx.strokeRect(
+      ctx.lineWidth/2,
+      ctx.lineWidth/2,
+      canvas.width-ctx.lineWidth,
+      canvas.height-ctx.lineWidth
+    );
 
-    for(const p of predictions||[]){
-      if(p.class!=='sports ball'||p.score<minConf)continue;
-      if(!best||p.score>best.score)best=p
+    ctx.fillStyle=triggered?'#22c55e':'#ffffff';
+    ctx.font=`bold ${Math.max(20,canvas.width/30)}px system-ui`;
+    ctx.fillText(
+      `movimento ${percent.toFixed(1)}% / ${threshold.toFixed(1)}%`,
+      18,
+      Math.max(36,canvas.height-24)
+    );
+    ctx.restore();
+
+    motionMeter.textContent=
+      'Movimento detectado: '+percent.toFixed(1)+'% • necessário: '+threshold.toFixed(1)+'%'
+  }
+
+  function analyzeMotion(){
+    const current=captureGrayFrame();
+
+    if(!backgroundFrame||backgroundFrame.length!==current.length){
+      backgroundFrame=Float32Array.from(current);
+      return 0
     }
 
-    if(best){
-      const[x,y,w,h]=best.bbox;
-      const areaRatio=(w*h)/frameArea;
-      if(areaRatio>=minAreaRatio){
-        fastBox=[x,y,w,h];
-        fastLastSeen=performance.now()
+    // Compensa mudanças globais de brilho/exposição do celular.
+    let globalDelta=0;
+    for(let i=0;i<current.length;i++){
+      globalDelta+=current[i]-backgroundFrame[i]
+    }
+    globalDelta/=current.length;
+
+    const pixelThreshold=Number(conf.value);
+    let changed=0;
+
+    for(let i=0;i<current.length;i++){
+      const diff=Math.abs((current[i]-backgroundFrame[i])-globalDelta);
+      if(diff>=pixelThreshold)changed++
+    }
+
+    const percent=changed/current.length*100;
+
+    // Se o cenário está praticamente parado e o sistema está pronto,
+    // adapta o fundo bem devagar a variações naturais de iluminação.
+    const minimumMotion=Number(size.value)/10;
+    if(armed && percent<Math.max(.35,minimumMotion*.28)){
+      const alpha=.025;
+      for(let i=0;i<current.length;i++){
+        backgroundFrame[i]=backgroundFrame[i]*(1-alpha)+current[i]*alpha
       }
     }
 
-    // Assistência visual específica para bola de basquete.
-    const candidate=detectBasketballAssist();
-    if(candidate){
-      assistConsecutive++;
-      assistBox=candidate;
-      // Dois quadros de cor para reduzir falso positivo de pele/parede.
-      if(assistConsecutive>=2)assistLastSeen=performance.now()
-    }else{
-      assistConsecutive=0;
-      assistBox=null
-    }
+    lastMotionPercent=percent;
+    return percent
+  }
 
-    const now=performance.now();
+  async function calibrateBackground(){
+    if(!running||calibrating)return;
+    calibrating=true;
+    armed=false;
+    qualifyingFrames=0;
+    lostSince=null;
+    backgroundFrame=null;
 
-    // Memória curta: se o braço esconder a bola por alguns frames, não "esquece" imediatamente.
-    const topFresh=topBox&&(now-topLastSeen<850);
-    const fastFresh=fastBox&&(now-fastLastSeen<520);
-    const assistFresh=assistBox&&(now-assistLastSeen<360);
+    calibrateBtn.disabled=true;
+    setStatus('🎯 CALIBRANDO — DEIXE A CÂMERA PARADA','wait');
+    motionMeter.textContent='Calibrando o fundo...';
 
-    if(topFresh)drawBox(topBox,'🏀 DETR / sports ball','#22c55e');
-    else if(fastFresh)drawBox(fastBox,'🏀 sports ball','#22c55e');
-    else if(assistFresh)drawBox(assistBox,'🏀 basketball assist','#f59e0b');
+    const count=12;
+    let sum=null;
 
-    return{
-      qualifies:Boolean(topFresh||fastFresh||assistFresh),
-      source:topFresh?'DETR':fastFresh?'COCO':'ASSIST'
+    try{
+      for(let n=0;n<count;n++){
+        const frame=captureGrayFrame();
+        if(!sum)sum=new Float32Array(frame.length);
+        for(let i=0;i<frame.length;i++)sum[i]+=frame[i];
+        await new Promise(r=>setTimeout(r,65))
+      }
+
+      backgroundFrame=new Float32Array(sum.length);
+      for(let i=0;i<sum.length;i++)backgroundFrame[i]=sum[i]/count;
+
+      armed=true;
+      setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready');
+      motionMeter.textContent='Movimento detectado: 0.0%'
+    }catch(e){
+      showError('Erro ao calibrar o fundo: '+e.message)
+    }finally{
+      calibrating=false;
+      calibrateBtn.disabled=false
     }
   }
 
   async function registerDetectedPoint(){
     const team=selectedTeam(),ok=await changeScore(team,1,true);
     if(ok){
-      setStatus('✅ +1 TIME '+team+'! RETIRE A BOLA','hit');
+      setStatus('✅ +1 TIME '+team+'! RETIRE O OBJETO','hit');
       if(navigator.vibrate)navigator.vibrate(100)
     }else setStatus('ERRO AO PONTUAR','wait')
   }
 
   async function detectionLoop(){
     if(!running)return;
-    try{
-      // Detector rápido continua rodando para resposta imediata.
-      const predictions=await model.detect(video);
-      const{qualifies,source}=draw(predictions);
-      const now=performance.now(),rearmMs=Number(rearm.value)*100,neededFrames=Number(frames.value);
 
-      if(qualifies){
-        lostSince=null;qualifyingFrames++;
-        if(armed&&qualifyingFrames>=neededFrames){
-          armed=false;
-          setModelStatus(
-            source==='DETR'
-              ?'✅ Bola confirmada pela IA TOP (DETR)'
-              :source==='COCO'
-                ?'✅ Bola confirmada pelo detector rápido'
-                :'✅ Bola confirmada pela assistência de basquete',
-            'ready'
-          );
-          await registerDetectedPoint()
-        }else if(!armed){
-          setStatus('RETIRE A BOLA','hit')
+    if(motionLoopBusy||calibrating){
+      setTimeout(detectionLoop,55);
+      return
+    }
+
+    motionLoopBusy=true;
+
+    try{
+      const percent=analyzeMotion();
+      const minimumMotion=Number(size.value)/10;
+      const stableLimit=Math.max(.35,minimumMotion*.38);
+      const triggered=percent>=minimumMotion;
+      const now=performance.now();
+      const rearmMs=Number(rearm.value)*100;
+      const neededFrames=Number(frames.value);
+
+      drawMotionOverlay(percent,triggered);
+
+      if(armed){
+        if(triggered){
+          qualifyingFrames++;
+          setStatus('⚡ MOVIMENTO DETECTADO...','ready');
+
+          if(qualifyingFrames>=neededFrames){
+            armed=false;
+            qualifyingFrames=0;
+            lostSince=null;
+            await registerDetectedPoint()
+          }
         }else{
-          setStatus('DETECTANDO...','ready')
+          qualifyingFrames=0;
+          setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready')
         }
       }else{
-        qualifyingFrames=0;
-        if(!armed){
+        // Depois do ponto, só libera quando a imagem realmente voltar
+        // a ficar parecida com o fundo original por um pequeno período.
+        if(percent<=stableLimit){
           if(lostSince===null)lostSince=now;
+
           if(now-lostSince>=rearmMs){
-            armed=true;lostSince=null;
-            // Limpa memórias antigas para exigir uma nova apresentação da bola.
-            topLastSeen=0;fastLastSeen=0;assistLastSeen=0;topBox=null;fastBox=null;assistBox=null;
-            setStatus('PRONTO — TIME '+selectedTeam(),'ready')
-          }else setStatus('AGUARDE...','wait')
+            armed=true;
+            lostSince=null;
+            qualifyingFrames=0;
+
+            // Pequeno ajuste do fundo após o objeto sair.
+            const fresh=captureGrayFrame();
+            backgroundFrame=Float32Array.from(fresh);
+
+            setStatus('🟢 PRONTO — TIME '+selectedTeam(),'ready')
+          }else{
+            setStatus('AGUARDE... CENA ESTABILIZANDO','wait')
+          }
         }else{
-          setStatus('PRONTO — TIME '+selectedTeam(),'ready')
+          lostSince=null;
+          setStatus('RETIRE A BOLA/MÃO DA CÂMERA','hit')
         }
       }
-    }catch(e){console.error(e)}
-    setTimeout(detectionLoop,85)
+    }catch(e){
+      console.error(e)
+    }finally{
+      motionLoopBusy=false
+    }
+
+    setTimeout(detectionLoop,55)
   }
 
   async function startCamera(){
     if(running)return;
-    clearError();startBtn.disabled=true;startBtn.textContent='Carregando...';
+    clearError();
+    startBtn.disabled=true;
+    startBtn.textContent='Abrindo câmera...';
+
     try{
-      if(!navigator.mediaDevices?.getUserMedia)throw new Error('A câmera exige HTTPS no Chrome.');
+      if(!navigator.mediaDevices?.getUserMedia)
+        throw new Error('A câmera exige HTTPS no Chrome.');
+
       const stream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},
+        video:{
+          facingMode:{ideal:'environment'},
+          width:{ideal:1280},
+          height:{ideal:720},
+          frameRate:{ideal:30,max:60}
+        },
         audio:false
       });
-      video.srcObject=stream;await video.play();
-      await new Promise(resolve=>video.readyState>=2?resolve():video.addEventListener('loadedmetadata',resolve,{once:true}));
-      canvas.width=video.videoWidth;canvas.height=video.videoHeight;
-      setStatus('CARREGANDO DETECTOR RÁPIDO...','wait');
-      setModelStatus('🧠 Preparando detector rápido...','wait');
-      await tf.ready();model=await cocoSsd.load({base:'mobilenet_v2'});
-      if('wakeLock'in navigator){try{wakeLock=await navigator.wakeLock.request('screen')}catch(e){}}
-      running=true;armed=true;startBtn.textContent='Câmera ativa';
-      setStatus('PRONTO — TIME '+selectedTeam(),'ready');
-      setModelStatus('⚡ Detector rápido ativo; carregando IA TOP em segundo plano...','wait');
-      detectionLoop();
-      loadTopDetector().catch(e=>console.warn(e))
+
+      video.srcObject=stream;
+      await video.play();
+
+      await new Promise(resolve=>
+        video.readyState>=2
+          ?resolve()
+          :video.addEventListener('loadedmetadata',resolve,{once:true})
+      );
+
+      canvas.width=video.videoWidth;
+      canvas.height=video.videoHeight;
+      setupMotionCanvas();
+
+      if('wakeLock'in navigator){
+        try{wakeLock=await navigator.wakeLock.request('screen')}catch(e){}
+      }
+
+      running=true;
+      startBtn.textContent='Câmera ativa';
+      await calibrateBackground();
+      detectionLoop()
     }catch(e){
-      startBtn.disabled=false;startBtn.textContent='▶ Iniciar câmera';
-      showError(e.message||String(e));setStatus('ERRO','wait')
+      startBtn.disabled=false;
+      startBtn.textContent='▶ Iniciar câmera';
+      showError(e.message||String(e));
+      setStatus('ERRO','wait')
     }
   }
 
@@ -1102,6 +1047,14 @@
       const s=JSON.parse(localStorage.getItem('ballers_localScores')||'null');
       if(s)localScores={A:clampScore(s.A),B:clampScore(s.B)}
     }catch(e){}
+    try{
+      const savedMotion=JSON.parse(localStorage.getItem('ballers_localSettings')||'null');
+      if(savedMotion&&Number(savedMotion.motionMode)===1)applySettings(savedMotion);
+      else forceMinimumDetection()
+    }catch(e){
+      forceMinimumDetection()
+    }
+
     deviceTeam.value=localStorage.getItem('ballers_deviceTeam')||'A';
     mode.value=localStorage.getItem('ballers_mode')||'local';
     dbUrl.value=localStorage.getItem('ballers_dbUrl')||'';
@@ -1115,7 +1068,7 @@
     }catch(e){}
 
     cloudPanel.style.display=mode.value==='cloud'?'block':'none';
-    highlightDevice();forceMinimumDetection();
+    highlightDevice();updateSettingLabels();
 
     if(mode.value==='cloud'&&normalizedDb().startsWith('https://')){
       await loadAudioScope(cloudScope());
@@ -1191,6 +1144,24 @@
       await firebasePut('state/updatedAt',Date.now());
       await syncOnce()
     }catch(e){showError('Erro ao zerar: '+e.message)}
+  });
+
+  calibrateBtn.addEventListener('click',async()=>{
+    if(!running){
+      showError('Inicie a câmera antes de recalibrar o fundo.');
+      return
+    }
+    await calibrateBackground()
+  });
+
+  superSensitiveBtn.addEventListener('click',()=>{
+    conf.value=10;
+    size.value=10;
+    rearm.value=5;
+    frames.value=1;
+    updateSettingLabels();
+    scheduleSettingsSave();
+    setStatus('⚡ MODO SUPER SENSÍVEL ATIVADO','ready')
   });
 
   audioFiles.addEventListener('change',()=>addFiles(audioFiles.files));
